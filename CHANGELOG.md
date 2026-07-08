@@ -3,6 +3,11 @@
 All notable changes to FootyLab. Versions refer to `index.html` (the app) unless noted.
 Data source: [Squiggle API](https://api.squiggle.com.au/) — fetched server-side via `api/squiggle.js`, per Squiggle's API rules.
 
+## [0.7.0] — 2026-07-08
+### Added
+- Server-side dataset architecture: a GitHub Actions "data factory" (`setup/update-data.yml` → copy to `.github/workflows/`) fetches Squiggle games weekly via `scripts/build-data.mjs` and the full Fryzigg player-stats dataset (~80 stat columns per player per game) via `scripts/players-split.R`, committing compact JSON to `data/`
+- App loads `data/games.json` first for an instant full-history load, live-refreshing the current season through the proxy; falls back to per-year proxy loading when the bundle is absent
+
 ## [0.6.0] — 2026-07-08
 ### Added
 - Ladder time machine: full H&A ladder for any loaded season (season selector in the results header), computed from results with finals excluded; premiers, minor premiers and wooden spoon called out; top and bottom rows highlighted
