@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<!-- ===========================================================
+  FOOTYLAB — AFL rare-occurrence engine
+  -------------------------------------------------------------
+  CHANGELOG
+  v0.2.0 (2026-07-08)
+    - Scorigami grid: interactive score-pair heatmap; tap a
+      cell to inspect a scoreline and list its actual games
+    - Season trends chart (avg total + avg margin per season,
+      respects current filters)
+    - Head-to-head card when team + opponent are both set
+      (record, streak, biggest win each way)
+    - New presets: "Won with fewer goals", "On this day"
+    - Round-number filter
+    - Shareable query URLs (Share query copies a link that
+      restores seasons, filters and view on open)
+  v0.1.0 (2026-07-08) Initial release.
+    - Season loader (1897→now) via /api/squiggle proxy, with
+      per-season localStorage cache (past seasons only)
+    - Query engine: team/role/result/opponent, venue, day of
+      week, stage (H&A / finals / GF), season range, margin,
+      total points, team-score ranges
+    - Preset chips: Draws, Thrillers, Demolitions, Shootouts,
+      Slogfests, Grand Finals
+    - Analyses: Scorigami firsts (first-ever scorelines, with
+      "only time ever" flags) and longest win/loss streaks
+    - Scoreboard stat strip, margin histogram, sortable table
+      (500-row render cap), CSV export of full filtered set
+  -------------------------------------------------------------
+  Stack: single-file vanilla HTML/JS, no build step.
+  Data: Squiggle API (api.squiggle.com.au) via api/squiggle.js —
+  Squiggle forbids direct browser fetches; do not bypass proxy.
+  =========================================================== -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FootyLab — AFL rare-occurrence engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --turf:#0E1512;      /* night oval */
+  --board:#141D19;     /* scoreboard panel */
+  --board2:#182420;
+  --line:#25332C;
+  --bone:#EAE5D6;      /* painted tin numerals */
+  --dim:#8FA098;       /* eucalypt grey */
+  --lamp:#F0B34A;      /* floodlight amber */
+  --lamp-hi:#FFD284;
+  --bad:#E07A5F;
+  --radius:6px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--turf);
+  color:var(--bone);
+  font-family:'Barlow',system-ui,sans-serif;
+  font-size:15px;line-height:1.45;
+  padding:14px 12px 60px;
+  max-width:980px;margin:0 auto;
+}
+::selection{background:var(--lamp);color:var(--turf)}
+button,select,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--lamp);outline-offset:2px;border-radius:3px}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+.wordmark{
+  font-family:'Oswald',sans-serif;font-weight:700;font-size:30px;
+  letter-spacing:.14em;text-transform:uppercase;line-height:1;
+}
+.wordmark em{font-style:normal;color:var(--lamp)}
+.ver{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim)}
+.tagline{width:100%;color:var(--dim);font-size:13px;margin-top:2px}
+.tagline a{color:var(--dim)}
+
+/* ---------- panels ---------- */
+.panel{
+  background:var(--board);border:1px solid var(--line);
+  border-radius:var(--radius);padding:12px;margin-top:12px;
+}
+.panel h2{
+  font-family:'Oswald',sans-serif;font-weight:600;font-size:12px;
+  letter-spacing:.22em;text-transform:uppercase;color:var(--dim);
+  margin-bottom:10px;
+}
+
+/* ---------- loader ---------- */
+.load-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+select,input[type=number]{
+  background:var(--turf);border:1px solid var(--line);border-radius:4px;
+  padding:7px 8px;font-family:'IBM Plex Mono',monospace;font-size:13px;
+  min-width:0;
+}
+select:disabled,input:disabled{opacity:.4}
+.btn{
+  background:var(--lamp);color:#1A1408;border:0;border-radius:4px;
+  padding:8px 14px;font-weight:600;cursor:pointer;font-size:14px;
+}
+.btn:hover{background:var(--lamp-hi)}
+.btn:disabled{opacity:.4;cursor:default}
+.btn.ghost{background:transparent;color:var(--lamp);border:1px solid var(--line)}
+.btn.ghost:hover{border-color:var(--lamp)}
+.progress{height:6px;background:var(--turf);border-radius:3px;overflow:hidden;margin-top:10px;display:none}
+.progress i{display:block;height:100%;width:0;background:var(--lamp);transition:width .15s}
+.status{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim);margin-top:8px;min-height:16px}
+.status .err{color:var(--bad)}
+.status button{background:none;border:0;color:var(--lamp);cursor:pointer;text-decoration:underline;font-size:12px;padding:0}
+
+/* ---------- filters ---------- */
+fieldset{border:0;min-width:0}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+@media(min-width:640px){.grid{grid-template-columns:repeat(4,1fr)}}
+.field label{
+  display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);margin-bottom:3px;font-weight:600;
+}
+.field select,.field input{width:100%}
+.pair{display:flex;gap:6px}
+.pair input{width:50%}
+.actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
+.hint{font-size:12px;color:var(--dim);width:100%}
+
+/* ---------- chips ---------- */
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.chip{
+  background:var(--board2);border:1px solid var(--line);border-radius:99px;
+  padding:5px 12px;font-size:13px;cursor:pointer;color:var(--bone);
+}
+.chip:hover{border-color:var(--lamp);color:var(--lamp-hi)}
+.chip.analysis{border-style:dashed}
+.chip.on{background:var(--lamp);color:#1A1408;border-color:var(--lamp);font-weight:600}
+
+/* ---------- scoreboard stat strip (signature) ---------- */
+.scoreboard{
+  display:grid;grid-template-columns:repeat(4,1fr);
+  background:var(--board2);border:1px solid var(--line);
+  border-radius:var(--radius);overflow:hidden;margin-top:12px;
+}
+.tile{
+  padding:12px 6px 10px;text-align:center;
+  border-left:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(0,0,0,.12));
+}
+.tile:first-child{border-left:0}
+.tile b{
+  display:block;font-family:'IBM Plex Mono',monospace;font-weight:600;
+  font-size:clamp(20px,6vw,34px);line-height:1.05;color:var(--bone);
+  font-variant-numeric:tabular-nums;letter-spacing:.01em;
+}
+.tile span{
+  display:block;margin-top:4px;font-family:'Oswald',sans-serif;font-size:10px;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--dim);
+}
+.record{margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--dim)}
+.record b{color:var(--lamp);font-weight:500}
+
+/* ---------- chart ---------- */
+#histoWrap{margin-top:12px}
+#histo{width:100%;height:150px;display:block}
+
+/* ---------- results ---------- */
+.results-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.results-head .count{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--lamp)}
+.note{font-size:12px;color:var(--dim);margin-top:6px}
+.tablewrap{overflow-x:auto;margin-top:8px;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:560px}
+th,td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{
+  font-family:'Oswald',sans-serif;font-weight:600;font-size:10px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  position:sticky;top:0;background:var(--board);
+}
+th.sortable{cursor:pointer}
+th.sortable:hover{color:var(--lamp)}
+th .arrow{color:var(--lamp)}
+td.num{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+td .w{color:var(--lamp-hi);font-weight:600}
+td .only{color:var(--lamp);font-weight:600}
+tr:hover td{background:rgba(240,179,74,.05)}
+.empty{padding:26px 10px;text-align:center;color:var(--dim)}
+
+footer{margin-top:22px;font-size:12px;color:var(--dim);line-height:1.6}
+footer a{color:var(--dim)}
+
+/* ---------- v0.2 additions ---------- */
+.h2h{
+  margin-top:8px;padding:10px 12px;background:var(--board2);
+  border:1px solid var(--line);border-radius:var(--radius);
+  font-size:13px;line-height:1.6;color:var(--dim);
+}
+.h2h b{color:var(--lamp);font-weight:600}
+#trend{width:100%;height:170px;display:block}
+#grid{width:100%;display:block;cursor:crosshair}
+.gridinfo{
+  margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;
+  color:var(--dim);min-height:18px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+}
+.gridinfo b{color:var(--bone)}
+.clearx{
+  background:var(--board2);border:1px dashed var(--lamp);border-radius:99px;
+  color:var(--lamp);font-size:12px;padding:2px 10px;cursor:pointer;
+}
+.clearx:hover{background:var(--lamp);color:#1A1408}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">Footy<em>Lab</em></div>
+  <div class="ver" id="verTag">v0.0.0</div>
+  <div class="tagline">AFL rare-occurrence engine · every V/AFL game since 1897 · data: <a href="https://api.squiggle.com.au/" target="_blank" rel="noopener">Squiggle</a></div>
+</header>
+
+<section class="panel" id="loadPanel">
+  <h2>Load seasons</h2>
+  <div class="load-row">
+    <select id="yFrom" aria-label="From season"></select>
+    <span style="color:var(--dim)">→</span>
+    <select id="yTo" aria-label="To season"></select>
+    <button class="btn" id="loadBtn">Load seasons</button>
+    <button class="btn ghost" id="loadAllBtn" title="Needed for true Scorigami firsts">Full history 1897→</button>
+  </div>
+  <div class="progress" id="prog"><i></i></div>
+  <div class="status" id="loadStatus">Load seasons to start querying 130 years of footy. Past seasons cache in this browser, so it&rsquo;s a one-time wait.</div>
+</section>
+
+<section class="panel">
+  <h2>Query</h2>
+  <fieldset id="filterSet" disabled>
+    <div class="grid">
+      <div class="field"><label for="fTeam">Team</label><select id="fTeam"></select></div>
+      <div class="field"><label for="fRole">Playing</label>
+        <select id="fRole"><option value="any">Home or away</option><option value="home">Home only</option><option value="away">Away only</option></select></div>
+      <div class="field"><label for="fResult">Result (for team)</label>
+        <select id="fResult"><option value="any">Any</option><option value="W">Won</option><option value="L">Lost</option><option value="D">Draw</option></select></div>
+      <div class="field"><label for="fOpp">Opponent</label><select id="fOpp"></select></div>
+      <div class="field"><label for="fVenue">Venue</label><select id="fVenue"></select></div>
+      <div class="field"><label for="fDow">Day</label>
+        <select id="fDow"><option value="-1">Any day</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></div>
+      <div class="field"><label for="fStage">Stage</label>
+        <select id="fStage"><option value="all">All games</option><option value="ha">Home &amp; away</option><option value="finals">Finals only</option><option value="gf">Grand Finals only</option></select></div>
+      <div class="field"><label for="fRnd">Round</label><select id="fRnd"></select></div>
+      <div class="field"><label>Seasons</label>
+        <div class="pair"><select id="fYFrom" aria-label="Season from"></select><select id="fYTo" aria-label="Season to"></select></div></div>
+      <div class="field"><label>Margin (pts)</label>
+        <div class="pair"><input type="number" id="fMarMin" min="0" placeholder="min"><input type="number" id="fMarMax" min="0" placeholder="max"></div></div>
+      <div class="field"><label>Total points</label>
+        <div class="pair"><input type="number" id="fTotMin" min="0" placeholder="min"><input type="number" id="fTotMax" min="0" placeholder="max"></div></div>
+      <div class="field"><label>Team score</label>
+        <div class="pair"><input type="number" id="fTsMin" min="0" placeholder="min"><input type="number" id="fTsMax" min="0" placeholder="max"></div></div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="applyBtn">Apply filters</button>
+      <button class="btn ghost" id="resetBtn">Reset</button>
+      <button class="btn ghost" id="shareBtn">Share query</button>
+      <span class="hint" id="filterHint"></span>
+    </div>
+    <div class="chips" id="presetChips">
+      <button class="chip" data-preset="draws">Draws</button>
+      <button class="chip" data-preset="thrillers">Thrillers &le;6</button>
+      <button class="chip" data-preset="demolitions">Demolitions 100+</button>
+      <button class="chip" data-preset="shootouts">Shootouts 200+</button>
+      <button class="chip" data-preset="slogs">Slogfests &le;120</button>
+      <button class="chip" data-preset="gf">Grand Finals</button>
+      <button class="chip" data-preset="fewergoals">Won with fewer goals</button>
+      <button class="chip" data-preset="onthisday">On this day</button>
+      <button class="chip analysis" data-mode="scorigami">&#10038; Scorigami firsts</button>
+      <button class="chip analysis" data-mode="streaks">Longest streaks</button>
+    </div>
+  </fieldset>
+</section>
+
+<div class="scoreboard" id="scoreboard" hidden>
+  <div class="tile"><b id="stGames">0</b><span>Games</span></div>
+  <div class="tile"><b id="stDraws">0</b><span>Draws</span></div>
+  <div class="tile"><b id="stMar">0</b><span>Avg margin</span></div>
+  <div class="tile"><b id="stTot">0</b><span>Avg total</span></div>
+</div>
+<div class="record" id="records" hidden></div>
+<div class="h2h" id="h2h" hidden></div>
+
+<section class="panel" id="histoWrap" hidden>
+  <h2>Margin spread <span style="letter-spacing:0;text-transform:none;color:var(--dim)">(6-point buckets)</span></h2>
+  <canvas id="histo" height="150"></canvas>
+</section>
+
+<section class="panel" id="trendWrap" hidden>
+  <h2>Season trends <span style="letter-spacing:0;text-transform:none;color:var(--dim)">(amber: avg total &middot; grey: avg margin)</span></h2>
+  <canvas id="trend" height="170"></canvas>
+</section>
+
+<section class="panel" id="gridWrap" hidden>
+  <h2>Scorigami grid <span style="letter-spacing:0;text-transform:none;color:var(--dim)">(x: winning score &middot; y: losing score &middot; tap a cell)</span></h2>
+  <canvas id="grid"></canvas>
+  <div class="gridinfo" id="gridInfo">Tap anywhere on the grid to inspect a scoreline.</div>
+</section>
+
+<section class="panel" id="resultsPanel" hidden>
+  <div class="results-head">
+    <h2 id="resultsTitle" style="margin:0">Results</h2>
+    <span class="count" id="resultsCount"></span>
+    <button class="btn ghost" id="csvBtn">Export CSV</button>
+  </div>
+  <div class="note" id="resultsNote"></div>
+  <div class="tablewrap"><table id="resultsTable"></table></div>
+</section>
+
+<footer>
+  Unofficial hobby tool. Match data &copy; <a href="https://api.squiggle.com.au/" target="_blank" rel="noopener">Squiggle API</a> (fetched server-side &amp; cached, per Squiggle&rsquo;s API rules). Not affiliated with the AFL.<br>
+  FootyLab <span id="verFoot"></span> &middot; day-of-week uses venue local time &middot; incomplete games excluded.
+</footer>
+
+<script>
+/* ============ FootyLab core ============ */
+'use strict';
+var APP_VERSION = '0.2.0';
+var API_BASE = '/api/squiggle';
+var MIN_YEAR = 1897;
+var CUR_YEAR = new Date().getFullYear();
+var FETCH_GAP_MS = 250;           // politeness gap between network fetches
+var RENDER_CAP = 500;             // max table rows rendered
+var FINAL_LABEL = {1:'Final',2:'EF',3:'QF',4:'SF',5:'PF',6:'GF'};
+var DOW_NAME = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+/* ---------- safe storage (never assume it exists or has room) ---------- */
+var LS = (function(){ try { return (typeof localStorage !== 'undefined') ? localStorage : null; } catch(e){ return null; } })();
+var store = {
+  ok: !!LS,
+  get: function(k){ if(!LS) return null; try { var v = LS.getItem(k); return v ? JSON.parse(v) : null; } catch(e){ return null; } },
+  set: function(k,v){ if(!LS) return false; try { LS.setItem(k, JSON.stringify(v)); return true; } catch(e){ this.ok = false; return false; } }
+};
+var CACHE_PREFIX = 'fl1:y:';      // bump prefix to bust schema changes
+
+/* ---------- state ---------- */
+var state = {
+  byYear: {},        // year -> normalized games array
+  games: [],         // all loaded, chronologically sorted
+  filtered: [],
+  mode: 'games',     // 'games' | 'scorigami' | 'streaks'
+  sort: { key: 'date', dir: -1 },
+  loading: false,
+  failedYears: [],
+  extra: { special: null, mday: null, exactKey: null },  // chip-driven filters with no form control
+  lastF: null,
+  pending: null,      // parsed hash awaiting data load
+  sm: null            // cached scoreMap for grid interaction
+};
+
+/* ---------- normalization (pure) ---------- */
+function dowFromDateStr(s){
+  // s: 'YYYY-MM-DD HH:MM:SS' venue-local; weekday of the date part
+  if (!s || s.length < 10) return -1;
+  var y = +s.slice(0,4), m = +s.slice(5,7), d = +s.slice(8,10);
+  if (!y || !m || !d) return -1;
+  return new Date(Date.UTC(y, m-1, d)).getUTCDay();
+}
+function normalizeGame(g){
+  var local = g.localtime || g.date || '';
+  var hs = +g.hscore || 0, as = +g.ascore || 0;
+  var draw = hs === as;
+  return {
+    id:  g.id,
+    y:   +g.year,
+    rnd: +g.round,
+    rname: g.roundname || ('Round ' + g.round),
+    fin: +g.is_final || 0,
+    gf:  +g.is_grand_final || 0,
+    dstr: (local || '').slice(0,10),
+    dow: dowFromDateStr(local),
+    venue: g.venue || 'Unknown',
+    ht: g.hteam, at: g.ateam,
+    hs: hs, as: as,
+    hg: +g.hgoals||0, hb: +g.hbehinds||0, ag: +g.agoals||0, ab: +g.abehinds||0,
+    tot: hs + as,
+    mar: Math.abs(hs - as),
+    win: draw ? null : (g.winner || (hs > as ? g.hteam : g.ateam))
+  };
+}
+
+/* ---------- data loading ---------- */
+function fetchYear(y){
+  return fetch(API_BASE + '?year=' + y)
+    .then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(j){
+      var games = (j && j.games) ? j.games : [];
+      return games.filter(function(g){ return +g.complete === 100; }).map(normalizeGame);
+    });
+}
+function sleep(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+
+function rebuildIndex(){
+  var all = [];
+  Object.keys(state.byYear).forEach(function(y){ all = all.concat(state.byYear[y]); });
+  all.sort(function(a,b){ return a.dstr < b.dstr ? -1 : a.dstr > b.dstr ? 1 : (a.id - b.id); });
+  state.games = all;
+}
+
+function loadRange(from, to){
+  if (state.loading) return;
+  state.loading = true; state.failedYears = [];
+  el('loadBtn').disabled = true; el('loadAllBtn').disabled = true;
+  var prog = el('prog'); prog.style.display = 'block';
+  var bar = prog.firstElementChild;
+  var years = []; for (var y = from; y <= to; y++) years.push(y);
+  var i = 0, fetchedFromNet = 0;
+
+  function step(){
+    if (i >= years.length) return finish();
+    var yr = years[i++];
+    bar.style.width = Math.round(i / years.length * 100) + '%';
+    // memory hit
+    if (state.byYear[yr]) { setStatus('Season ' + yr + ' · ' + i + '/' + years.length + ' (cached)'); return step();
+    }
+    // storage hit (never trust cache for the current season)
+    if (yr < CUR_YEAR) {
+      var cached = store.get(CACHE_PREFIX + yr);
+      if (cached && cached.length !== undefined) {
+        state.byYear[yr] = cached;
+        setStatus('Season ' + yr + ' · ' + i + '/' + years.length + ' (cached)');
+        return step();
+      }
+    }
+    setStatus('Fetching ' + yr + ' · ' + i + '/' + years.length + ' \u2026');
+    fetchYear(yr).then(function(games){
+      state.byYear[yr] = games;
+      if (yr < CUR_YEAR) store.set(CACHE_PREFIX + yr, games);
+      fetchedFromNet++;
+      return sleep(FETCH_GAP_MS).then(step);
+    }).catch(function(){
+      state.failedYears.push(yr);
+      return sleep(FETCH_GAP_MS).then(step);
+    });
+  }
+
+  function finish(){
+    state.loading = false;
+    el('loadBtn').disabled = false; el('loadAllBtn').disabled = false;
+    prog.style.display = 'none'; bar.style.width = '0';
+    rebuildIndex();
+    var msg = 'Loaded ' + fmtInt(state.games.length) + ' games across ' + Object.keys(state.byYear).length + ' seasons.';
+    if (!store.ok) msg += ' (Browser cache full \u2014 data will re-download next visit.)';
+    if (state.failedYears.length) {
+      setStatus(msg + ' <span class="err">' + state.failedYears.length + ' season(s) failed.</span> <button id="retryBtn">Retry failed</button>', true);
+      var rb = el('retryBtn');
+      if (rb) rb.onclick = function(){ var f = state.failedYears.slice(); state.failedYears = []; loadRange(Math.min.apply(null,f), Math.max.apply(null,f)); };
+    } else {
+      setStatus(msg);
+    }
+    if (state.games.length) {
+      el('filterSet').disabled = false;
+      populateSelectors();
+      if (!(window.applyPending && window.applyPending())) applyNow();
+    } else if (!state.failedYears.length) {
+      setStatus('No games came back. If you\u2019re opening this file directly, note it needs its /api route \u2014 run it on the Vercel deployment.', true);
+    } else if (state.failedYears.length === (to - from + 1)) {
+      setStatus('Couldn\u2019t reach the data proxy. This app needs its /api route \u2014 run it on the Vercel deployment. <button id="retryBtn2">Retry</button>', true);
+      var rb2 = el('retryBtn2'); if (rb2) rb2.onclick = function(){ state.failedYears = []; loadRange(from, to); };
+    }
+  }
+  step();
+}
+
+/* ---------- filtering (pure) ---------- */
+function filterGames(games, f){
+  return games.filter(function(g){
+    if (f.yFrom != null && g.y < f.yFrom) return false;
+    if (f.yTo   != null && g.y > f.yTo) return false;
+    if (f.stage === 'ha' && g.fin !== 0) return false;
+    if (f.stage === 'finals' && g.fin === 0) return false;
+    if (f.stage === 'gf' && g.gf !== 1) return false;
+    if (f.rnd != null && g.rnd !== f.rnd) return false;
+    if (f.mday && g.dstr.slice(5) !== f.mday) return false;
+    if (f.exactKey && scoreKey(g) !== f.exactKey) return false;
+    if (f.special === 'fewergoals') {
+      if (g.win === null) return false;
+      var wgoals = g.win === g.ht ? g.hg : g.ag;
+      var lgoals = g.win === g.ht ? g.ag : g.hg;
+      if (wgoals >= lgoals) return false;
+    }
+    if (f.venue && g.venue !== f.venue) return false;
+    if (f.dow != null && f.dow >= 0 && g.dow !== f.dow) return false;
+
+    var side = null; // 'h' | 'a' for f.team
+    if (f.team) {
+      var isH = g.ht === f.team, isA = g.at === f.team;
+      if (f.role === 'home') { if (!isH) return false; side = 'h'; }
+      else if (f.role === 'away') { if (!isA) return false; side = 'a'; }
+      else { if (!isH && !isA) return false; side = isH ? 'h' : 'a'; }
+      if (f.opp) { var opp = side === 'h' ? g.at : g.ht; if (opp !== f.opp) return false; }
+    } else if (f.opp) {
+      if (g.ht !== f.opp && g.at !== f.opp) return false;
+    }
+
+    if (f.result === 'D') { if (g.win !== null) return false; }
+    else if (f.result === 'W' && f.team) { if (g.win !== f.team) return false; }
+    else if (f.result === 'L' && f.team) { if (g.win === null || g.win === f.team) return false; }
+
+    if (f.team && side) {
+      var ts = side === 'h' ? g.hs : g.as;
+      if (f.tsMin != null && ts < f.tsMin) return false;
+      if (f.tsMax != null && ts > f.tsMax) return false;
+    }
+    if (f.marMin != null && g.mar < f.marMin) return false;
+    if (f.marMax != null && g.mar > f.marMax) return false;
+    if (f.totMin != null && g.tot < f.totMin) return false;
+    if (f.totMax != null && g.tot > f.totMax) return false;
+    return true;
+  });
+}
+
+/* ---------- analyses (pure) ---------- */
+function scoreKey(g){
+  var hi = Math.max(g.hs, g.as), lo = Math.min(g.hs, g.as);
+  return hi + '-' + lo;
+}
+function scorigamiFirsts(allGames){
+  // allGames must be chronologically sorted
+  var seen = {}, firsts = [];
+  for (var i = 0; i < allGames.length; i++) {
+    var g = allGames[i], k = scoreKey(g);
+    if (!seen[k]) { seen[k] = { count: 1 }; firsts.push({ g: g, key: k, rec: seen[k] }); }
+    else seen[k].count++;
+  }
+  var rows = firsts.map(function(f){ return { g: f.g, key: f.key, count: f.rec.count, only: f.rec.count === 1 }; });
+  rows.sort(function(a,b){ return a.g.dstr < b.g.dstr ? 1 : a.g.dstr > b.g.dstr ? -1 : 0; });
+  return rows;
+}
+function longestStreaks(allGames){
+  var runs = {}; // team -> {cur:{type,len,from}, bestW, bestL}
+  function best(team, type, len, from, to){
+    var r = runs[team], slot = type === 'W' ? 'bestW' : 'bestL';
+    if (!r[slot] || len > r[slot].len || (len === r[slot].len && to > r[slot].to)) {
+      r[slot] = { team: team, len: len, from: from, to: to };
+    }
+  }
+  function push(team, outcome, g){
+    if (!runs[team]) runs[team] = { cur: null, bestW: null, bestL: null };
+    var r = runs[team];
+    if (outcome === 'D') { closeRun(team, g); return; }
+    if (r.cur && r.cur.type === outcome) { r.cur.len++; r.cur.to = g.dstr; }
+    else { closeRun(team, g); r.cur = { type: outcome, len: 1, from: g.dstr, to: g.dstr }; }
+  }
+  function closeRun(team){
+    var r = runs[team];
+    if (r && r.cur) { best(team, r.cur.type, r.cur.len, r.cur.from, r.cur.to); r.cur = null; }
+  }
+  for (var i = 0; i < allGames.length; i++) {
+    var g = allGames[i];
+    var hOut = g.win === null ? 'D' : (g.win === g.ht ? 'W' : 'L');
+    var aOut = g.win === null ? 'D' : (g.win === g.at ? 'W' : 'L');
+    push(g.ht, hOut, g); push(g.at, aOut, g);
+  }
+  var wins = [], losses = [];
+  Object.keys(runs).forEach(function(t){
+    closeRun(t);
+    if (runs[t].bestW) wins.push(runs[t].bestW);
+    if (runs[t].bestL) losses.push(runs[t].bestL);
+  });
+  function cmp(a,b){ return b.len - a.len || (a.to < b.to ? 1 : -1); }
+  wins.sort(cmp); losses.sort(cmp);
+  return { wins: wins.slice(0,10), losses: losses.slice(0,10) };
+}
+function computeStats(games){
+  var n = games.length, draws = 0, sumMar = 0, sumTot = 0, maxMar = null, maxTot = null;
+  for (var i = 0; i < n; i++) {
+    var g = games[i];
+    if (g.win === null) draws++;
+    sumMar += g.mar; sumTot += g.tot;
+    if (!maxMar || g.mar > maxMar.mar) maxMar = g;
+    if (!maxTot || g.tot > maxTot.tot) maxTot = g;
+  }
+  return { n:n, draws:draws, avgMar: n ? sumMar/n : 0, avgTot: n ? sumTot/n : 0, maxMar:maxMar, maxTot:maxTot };
+}
+
+/* ---------- CSV (pure) ---------- */
+function csvCell(v){
+  var s = String(v == null ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function toCSV(games){
+  var head = ['date','year','round','stage','home','home_score','home_goals','home_behinds','away','away_score','away_goals','away_behinds','winner','margin','total','venue'];
+  var lines = [head.join(',')];
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    lines.push([g.dstr, g.y, g.rname, g.fin ? (FINAL_LABEL[g.fin]||'Final') : 'H&A',
+      g.ht, g.hs, g.hg, g.hb, g.at, g.as, g.ag, g.ab,
+      g.win === null ? 'DRAW' : g.win, g.mar, g.tot, g.venue].map(csvCell).join(','));
+  }
+  return lines.join('\n');
+}
+
+/* ---------- formatting ---------- */
+function fmtInt(n){ return n.toLocaleString('en-AU'); }
+function fmt1(n){ return (Math.round(n*10)/10).toFixed(1); }
+function rdLabel(g){ return g.fin ? (FINAL_LABEL[g.fin] || 'Final') : 'R' + g.rnd; }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function matchHTML(g){
+  var h = esc(g.ht), a = esc(g.at);
+  if (g.win === g.ht) h = '<span class="w">' + h + '</span>';
+  if (g.win === g.at) a = '<span class="w">' + a + '</span>';
+  return h + ' ' + g.hs + ' \u2013 ' + g.as + ' ' + a;
+}
+
+/* ---------- v0.2 pure core ---------- */
+function scoreMap(allGames){
+  // allGames chronologically sorted
+  var map = {}, maxS = 0;
+  for (var i = 0; i < allGames.length; i++) {
+    var g = allGames[i], k = scoreKey(g);
+    var hi = Math.max(g.hs, g.as);
+    if (hi > maxS) maxS = hi;
+    if (!map[k]) map[k] = { count: 1, first: g, last: g };
+    else { map[k].count++; map[k].last = g; }
+  }
+  return { map: map, maxScore: maxS };
+}
+function seasonSeries(games){
+  var by = {};
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i], b = by[g.y] || (by[g.y] = { n: 0, tot: 0, mar: 0 });
+    b.n++; b.tot += g.tot; b.mar += g.mar;
+  }
+  return Object.keys(by).map(function(y){
+    var b = by[y];
+    return { y: +y, n: b.n, avgTot: b.tot / b.n, avgMar: b.mar / b.n };
+  }).sort(function(a,b){ return a.y - b.y; });
+}
+function h2hSummary(meetings, team){
+  // meetings: chronologically sorted games all involving `team`
+  var w = 0, l = 0, d = 0, pf = 0, pa = 0, bigFor = null, bigAgainst = null;
+  for (var i = 0; i < meetings.length; i++) {
+    var g = meetings[i], isH = g.ht === team;
+    pf += isH ? g.hs : g.as; pa += isH ? g.as : g.hs;
+    if (g.win === null) d++;
+    else if (g.win === team) { w++; if (!bigFor || g.mar > bigFor.mar) bigFor = g; }
+    else { l++; if (!bigAgainst || g.mar > bigAgainst.mar) bigAgainst = g; }
+  }
+  var cur = null;
+  for (var j = meetings.length - 1; j >= 0; j--) {
+    var o = meetings[j].win === null ? 'D' : (meetings[j].win === team ? 'W' : 'L');
+    if (!cur) { cur = { type: o, len: 1 }; if (o === 'D') break; }
+    else if (o === cur.type) cur.len++;
+    else break;
+  }
+  return { n: meetings.length, w: w, l: l, d: d, pf: pf, pa: pa, bigFor: bigFor, bigAgainst: bigAgainst, streak: cur };
+}
+function buildHash(f, extra, years, mode){
+  var p = [];
+  function add(k, v){ if (v !== '' && v != null) p.push(k + '=' + encodeURIComponent(v)); }
+  add('y', years[0] + '-' + years[1]);
+  if (mode && mode !== 'games') add('m', mode);
+  add('t', f.team);
+  if (f.role !== 'any') add('role', f.role);
+  if (f.result !== 'any') add('res', f.result);
+  add('o', f.opp); add('v', f.venue);
+  if (f.dow >= 0) add('d', f.dow);
+  if (f.stage !== 'all') add('st', f.stage);
+  add('yf', f.yFrom); add('yt', f.yTo);
+  add('mm', f.marMin); add('mx', f.marMax);
+  add('tm', f.totMin); add('tx', f.totMax);
+  add('sm', f.tsMin); add('sx', f.tsMax);
+  add('r', f.rnd);
+  if (extra) { add('sp', extra.special); add('md', extra.mday); add('k', extra.exactKey); }
+  return p.join('&');
+}
+function parseHash(h){
+  if (!h) return null;
+  if (h.charAt(0) === '#') h = h.slice(1);
+  if (!h) return null;
+  var sp;
+  try { sp = new URLSearchParams(h); } catch (e) { return null; }
+  function num(k){ var v = sp.get(k); return (v == null || v === '') ? null : +v; }
+  var y = (sp.get('y') || '').split('-');
+  var years = (y.length === 2 && isFinite(+y[0]) && isFinite(+y[1])) ? [+y[0], +y[1]] : null;
+  return {
+    years: years,
+    mode: sp.get('m') || 'games',
+    f: {
+      team: sp.get('t') || '', role: sp.get('role') || 'any', result: sp.get('res') || 'any',
+      opp: sp.get('o') || '', venue: sp.get('v') || '',
+      dow: sp.get('d') == null ? -1 : +sp.get('d'), stage: sp.get('st') || 'all',
+      yFrom: num('yf'), yTo: num('yt'),
+      marMin: num('mm'), marMax: num('mx'), totMin: num('tm'), totMax: num('tx'),
+      tsMin: num('sm'), tsMax: num('sx'), rnd: num('r')
+    },
+    extra: { special: sp.get('sp') || null, mday: sp.get('md') || null, exactKey: sp.get('k') || null }
+  };
+}
+
+/* expose pure core for the test harness */
+if (typeof window !== 'undefined') {
+  window.FL = { normalizeGame:normalizeGame, filterGames:filterGames, scorigamiFirsts:scorigamiFirsts,
+    longestStreaks:longestStreaks, computeStats:computeStats, toCSV:toCSV, dowFromDateStr:dowFromDateStr, scoreKey:scoreKey,
+    scoreMap:scoreMap, seasonSeries:seasonSeries, h2hSummary:h2hSummary, buildHash:buildHash, parseHash:parseHash };
+}
+
+/* ================= UI layer (browser only) ================= */
+if (typeof document !== 'undefined') (function(){
+
+function elById(id){ return document.getElementById(id); }
+window.el = elById; var el = elById;
+
+function setStatus(html, isHTML){
+  var s = el('loadStatus');
+  if (isHTML) s.innerHTML = html; else s.textContent = html;
+}
+window.setStatus = setStatus;
+
+/* ----- selectors ----- */
+function fillSelect(sel, values, firstLabel){
+  var keep = sel.value;
+  sel.innerHTML = '';
+  var o0 = document.createElement('option'); o0.value=''; o0.textContent = firstLabel; sel.appendChild(o0);
+  values.forEach(function(v){ var o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+  if (keep && values.indexOf(keep) >= 0) sel.value = keep;
+}
+function fillYears(sel, years, pick){
+  sel.innerHTML = '';
+  years.forEach(function(y){ var o = document.createElement('option'); o.value = y; o.textContent = y; sel.appendChild(o); });
+  sel.value = pick;
+}
+function populateSelectors(){
+  var teams = {}, venues = {}, years = {}, rounds = {};
+  state.games.forEach(function(g){ teams[g.ht]=1; teams[g.at]=1; venues[g.venue]=1; years[g.y]=1; rounds[g.rnd]=1; });
+  fillSelect(el('fTeam'), Object.keys(teams).sort(), 'Any team');
+  fillSelect(el('fOpp'), Object.keys(teams).sort(), 'Any opponent');
+  fillSelect(el('fVenue'), Object.keys(venues).sort(), 'Any venue');
+  var rnds = Object.keys(rounds).map(Number).sort(function(a,b){return a-b;});
+  var rSel = el('fRnd'), rKeep = rSel.value;
+  rSel.innerHTML = '';
+  var r0 = document.createElement('option'); r0.value=''; r0.textContent='Any round'; rSel.appendChild(r0);
+  rnds.forEach(function(r){ var o = document.createElement('option'); o.value = r; o.textContent = 'R' + r; rSel.appendChild(o); });
+  if (rKeep !== '' && rounds[rKeep]) rSel.value = rKeep;
+  var yrs = Object.keys(years).map(Number).sort(function(a,b){return a-b;});
+  fillYears(el('fYFrom'), yrs, yrs[0]);
+  fillYears(el('fYTo'), yrs, yrs[yrs.length-1]);
+}
+window.populateSelectors = populateSelectors;
+
+function numOrNull(id){ var v = el(id).value.trim(); if (v === '') return null; var n = +v; return isFinite(n) ? n : null; }
+function readFilters(){
+  return {
+    team: el('fTeam').value || '', role: el('fRole').value, result: el('fResult').value,
+    opp: el('fOpp').value || '', venue: el('fVenue').value || '',
+    dow: +el('fDow').value, stage: el('fStage').value,
+    rnd: el('fRnd').value === '' ? null : +el('fRnd').value,
+    yFrom: +el('fYFrom').value || null, yTo: +el('fYTo').value || null,
+    marMin: numOrNull('fMarMin'), marMax: numOrNull('fMarMax'),
+    totMin: numOrNull('fTotMin'), totMax: numOrNull('fTotMax'),
+    tsMin: numOrNull('fTsMin'), tsMax: numOrNull('fTsMax'),
+    special: state.extra.special, mday: state.extra.mday, exactKey: state.extra.exactKey
+  };
+}
+var EXTRA_LABEL = { special: 'won with fewer goals', mday: 'played on ', exactKey: 'scoreline ' };
+function renderHint(warnings){
+  var h = el('filterHint'), parts = warnings.slice();
+  h.innerHTML = '';
+  parts.forEach(function(w){ var s = document.createElement('span'); s.textContent = w + ' '; h.appendChild(s); });
+  Object.keys(state.extra).forEach(function(k){
+    if (!state.extra[k]) return;
+    var b = document.createElement('button');
+    b.className = 'clearx';
+    b.textContent = (k === 'special' ? EXTRA_LABEL.special : EXTRA_LABEL[k] + state.extra[k]) + ' \u2715';
+    b.onclick = function(){ state.extra[k] = null; applyNow(); };
+    h.appendChild(b);
+  });
+}
+function applyNow(){
+  state.mode = 'games';
+  var f = readFilters();
+  var warnings = [];
+  if ((f.result === 'W' || f.result === 'L') && !f.team) warnings.push('Won/Lost needs a team selected \u2014 ignoring result filter.');
+  if ((f.tsMin != null || f.tsMax != null) && !f.team) warnings.push('Team score needs a team selected \u2014 ignoring.');
+  renderHint(warnings);
+  state.lastF = f;
+  state.filtered = filterGames(state.games, f);
+  sortFiltered();
+  render();
+}
+window.applyNow = applyNow;
+
+/* ----- sorting ----- */
+function sortFiltered(){
+  var k = state.sort.key, d = state.sort.dir;
+  state.filtered.sort(function(a,b){
+    var av, bv;
+    if (k === 'date') { av = a.dstr; bv = b.dstr; }
+    else { av = a[k]; bv = b[k]; }
+    return av < bv ? -d : av > bv ? d : 0;
+  });
+}
+
+/* ----- rendering ----- */
+function render(){
+  var mode = state.mode;
+  el('scoreboard').hidden = mode !== 'games';
+  el('records').hidden = mode !== 'games';
+  el('histoWrap').hidden = mode !== 'games';
+  el('trendWrap').hidden = true;   // renderGames unhides when >=2 seasons
+  el('gridWrap').hidden = mode !== 'scorigami';
+  el('h2h').hidden = true;         // renderGames unhides when team+opp set
+  el('resultsPanel').hidden = false;
+  el('csvBtn').style.display = mode === 'games' ? '' : 'none';
+  document.querySelectorAll('.chip.analysis').forEach(function(c){
+    c.classList.toggle('on', c.getAttribute('data-mode') === mode);
+  });
+  if (mode === 'games') renderGames();
+  else if (mode === 'scorigami') renderScorigami();
+  else renderStreaks();
+}
+
+function renderH2H(f){
+  var box = el('h2h');
+  if (!(f && f.team && f.opp && state.filtered.length)) { box.hidden = true; return; }
+  var meet = state.filtered.slice().sort(function(a,b){ return a.dstr < b.dstr ? -1 : a.dstr > b.dstr ? 1 : 0; });
+  var s = h2hSummary(meet, f.team);
+  var streakTxt = '';
+  if (s.streak) {
+    if (s.streak.type === 'D') streakTxt = 'last meeting drawn';
+    else streakTxt = esc(s.streak.type === 'W' ? f.team : f.opp) + ' \u00D7' + s.streak.len;
+  }
+  box.innerHTML = '<b>' + esc(f.team) + ' v ' + esc(f.opp) + '</b> \u2014 ' + s.n + ' meetings in this query: ' +
+    esc(f.team) + ' ' + s.w + ', ' + esc(f.opp) + ' ' + s.l + ', drawn ' + s.d +
+    (streakTxt ? ' &middot; streak: ' + streakTxt : '') +
+    ' &middot; points ' + fmtInt(s.pf) + '\u2013' + fmtInt(s.pa) +
+    (s.bigFor ? '<br>Biggest: ' + esc(f.team) + ' by ' + s.bigFor.mar + ' (' + s.bigFor.y + ')' : '') +
+    (s.bigAgainst ? ' &middot; ' + esc(f.opp) + ' by ' + s.bigAgainst.mar + ' (' + s.bigAgainst.y + ')' : '');
+  box.hidden = false;
+}
+
+function renderGames(){
+  var s = computeStats(state.filtered);
+  el('stGames').textContent = fmtInt(s.n);
+  el('stDraws').textContent = fmtInt(s.draws);
+  el('stMar').textContent = fmt1(s.avgMar);
+  el('stTot').textContent = fmt1(s.avgTot);
+  var rec = '';
+  if (s.maxMar) rec += 'Biggest margin: <b>' + esc(s.maxMar.win || 'Draw') + ' by ' + s.maxMar.mar + '</b> (' + s.maxMar.dstr + ') &middot; ';
+  if (s.maxTot) rec += 'Highest total: <b>' + s.maxTot.tot + '</b> \u2014 ' + esc(s.maxTot.ht) + ' v ' + esc(s.maxTot.at) + ' (' + s.maxTot.y + ')';
+  el('records').innerHTML = rec;
+  drawHisto(state.filtered);
+  renderH2H(state.lastF);
+  drawTrend(seasonSeries(state.filtered));
+
+  el('resultsTitle').textContent = 'Results';
+  el('resultsCount').textContent = fmtInt(s.n) + ' games';
+  el('resultsNote').textContent = s.n > RENDER_CAP ? ('Showing first ' + RENDER_CAP + ' \u2014 tighten filters, sort, or export CSV for the lot.') : '';
+
+  var arrow = state.sort.dir === -1 ? ' \u25BE' : ' \u25B4';
+  function th(label, key){
+    return '<th class="sortable" data-key="' + key + '">' + label + (state.sort.key === key ? '<span class="arrow">' + arrow + '</span>' : '') + '</th>';
+  }
+  var html = '<thead><tr>' + th('Date','date') + '<th>Match</th>' + th('Mgn','mar') + th('Tot','tot') + '<th>Rd</th><th>Venue</th></tr></thead><tbody>';
+  var rows = state.filtered.slice(0, RENDER_CAP);
+  if (!rows.length) html += '<tr><td colspan="6" class="empty">No games match. Loosen a filter or two.</td></tr>';
+  for (var i = 0; i < rows.length; i++) {
+    var g = rows[i];
+    html += '<tr><td class="num">' + g.dstr + '</td><td>' + matchHTML(g) + '</td><td class="num">' + g.mar +
+      '</td><td class="num">' + g.tot + '</td><td>' + esc(rdLabel(g)) + '</td><td>' + esc(g.venue) + '</td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
+  bindSortHeaders();
+}
+
+function renderScorigami(){
+  state.sm = scoreMap(state.games);
+  drawGrid(state.sm);
+  var rows = scorigamiFirsts(state.games);
+  var onlyCount = rows.filter(function(r){ return r.only; }).length;
+  el('resultsTitle').textContent = 'Scorigami \u2014 first-ever scorelines';
+  el('resultsCount').textContent = fmtInt(rows.length) + ' distinct scorelines';
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Computed over ALL loaded seasons (' + loadedFrom + '\u2192), ignoring filters. ' +
+    fmtInt(onlyCount) + ' scorelines have happened exactly once. Load 1897\u2192 for true firsts. Newest first, capped at ' + RENDER_CAP + ' rows.';
+  var html = '<thead><tr><th>First seen</th><th>Score</th><th>Match</th><th>Since then</th><th>Rd</th></tr></thead><tbody>';
+  var show = rows.slice(0, RENDER_CAP);
+  for (var i = 0; i < show.length; i++) {
+    var r = show[i], g = r.g;
+    html += '<tr><td class="num">' + g.dstr + '</td><td class="num">' + r.key + '</td><td>' + matchHTML(g) + '</td><td>' +
+      (r.only ? '<span class="only">\u273A only time ever</span>' : 'seen ' + (r.count - 1) + '\u00D7 more') +
+      '</td><td>' + esc(rdLabel(g)) + '</td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
+}
+
+function renderStreaks(){
+  var st = longestStreaks(state.games);
+  el('resultsTitle').textContent = 'Longest streaks';
+  el('resultsCount').textContent = '';
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Computed over ALL loaded seasons (' + loadedFrom + '\u2192), ignoring filters. Draws break streaks.';
+  function block(title, list){
+    var h = '<tbody><tr><th colspan="4">' + title + '</th></tr><tr><th>Team</th><th>Games</th><th>From</th><th>To</th></tr>';
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      h += '<tr><td>' + esc(r.team) + '</td><td class="num">' + r.len + '</td><td class="num">' + r.from + '</td><td class="num">' + r.to + '</td></tr>';
+    }
+    return h + '</tbody>';
+  }
+  el('resultsTable').innerHTML = block('Winning streaks \u2014 top 10', st.wins) + block('Losing streaks \u2014 top 10', st.losses);
+}
+
+function bindSortHeaders(){
+  document.querySelectorAll('#resultsTable th.sortable').forEach(function(h){
+    h.onclick = function(){
+      var k = h.getAttribute('data-key');
+      if (state.sort.key === k) state.sort.dir = -state.sort.dir;
+      else { state.sort.key = k; state.sort.dir = -1; }
+      sortFiltered(); renderGames();
+    };
+  });
+}
+
+/* ----- histogram ----- */
+function drawHisto(games){
+  var cv = el('histo');
+  var cssW = cv.clientWidth || 600, cssH = 150, dpr = window.devicePixelRatio || 1;
+  cv.width = cssW * dpr; cv.height = cssH * dpr;
+  var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+  ctx.clearRect(0,0,cssW,cssH);
+  var BUCKETS = 21; // 0-5, 6-11, ... 120+
+  var counts = new Array(BUCKETS).fill ? new Array(BUCKETS).fill(0) : [];
+  if (!counts.length) for (var z=0;z<BUCKETS;z++) counts[z]=0;
+  for (var i = 0; i < games.length; i++) {
+    var b = Math.min(Math.floor(games[i].mar / 6), BUCKETS - 1);
+    counts[b]++;
+  }
+  var max = Math.max.apply(null, counts.concat([1]));
+  var padB = 18, padT = 12, gap = 2;
+  var bw = (cssW - gap * (BUCKETS - 1)) / BUCKETS;
+  var styles = getComputedStyle(document.documentElement);
+  ctx.font = '10px "IBM Plex Mono", monospace';
+  for (var j = 0; j < BUCKETS; j++) {
+    var h = counts[j] / max * (cssH - padB - padT);
+    var x = j * (bw + gap), y = cssH - padB - h;
+    ctx.fillStyle = styles.getPropertyValue('--lamp').trim() || '#F0B34A';
+    ctx.fillRect(x, y, bw, h);
+    if (j % 5 === 0 || j === BUCKETS - 1) {
+      ctx.fillStyle = styles.getPropertyValue('--dim').trim() || '#8FA098';
+      ctx.fillText(j === BUCKETS - 1 ? '120+' : String(j * 6), x, cssH - 5);
+    }
+  }
+  ctx.fillStyle = styles.getPropertyValue('--dim').trim() || '#8FA098';
+  ctx.fillText('peak ' + fmtInt(max), 4, padT - 2);
+}
+
+/* ----- season trend chart ----- */
+function drawTrend(series){
+  var wrap = el('trendWrap');
+  if (state.mode !== 'games' || series.length < 2) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  var cv = el('trend');
+  var cssW = cv.clientWidth || 600, cssH = 170, dpr = window.devicePixelRatio || 1;
+  cv.width = cssW * dpr; cv.height = cssH * dpr;
+  var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+  ctx.clearRect(0,0,cssW,cssH);
+  var styles = getComputedStyle(document.documentElement);
+  var lamp = styles.getPropertyValue('--lamp').trim() || '#F0B34A';
+  var dim = styles.getPropertyValue('--dim').trim() || '#8FA098';
+  var line = styles.getPropertyValue('--line').trim() || '#25332C';
+  var padL = 30, padR = 6, padT = 10, padB = 18;
+  var y0 = series[0].y, y1 = series[series.length-1].y;
+  var maxV = 0;
+  series.forEach(function(s){ if (s.avgTot > maxV) maxV = s.avgTot; });
+  maxV = Math.ceil(maxV / 50) * 50 || 50;
+  function X(y){ return padL + (y - y0) / Math.max(1, y1 - y0) * (cssW - padL - padR); }
+  function Y(v){ return padT + (1 - v / maxV) * (cssH - padT - padB); }
+  ctx.font = '10px "IBM Plex Mono", monospace';
+  [0, maxV/2, maxV].forEach(function(v){
+    ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(cssW - padR, Y(v)); ctx.stroke();
+    ctx.fillStyle = dim; ctx.fillText(String(Math.round(v)), 2, Y(v) + 3);
+  });
+  function plot(key, color){
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+    series.forEach(function(s, i){ var x = X(s.y), y = Y(s[key]); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+    ctx.stroke(); ctx.lineWidth = 1;
+  }
+  plot('avgTot', lamp);
+  plot('avgMar', dim);
+  ctx.fillStyle = dim;
+  ctx.fillText(String(y0), padL, cssH - 5);
+  var endLbl = String(y1); ctx.fillText(endLbl, cssW - padR - ctx.measureText(endLbl).width, cssH - 5);
+  if (y1 - y0 > 20) { var midY = Math.round((y0 + y1) / 2); ctx.fillText(String(midY), X(midY) - 14, cssH - 5); }
+}
+
+/* ----- scorigami grid ----- */
+function drawGrid(sm){
+  var cv = el('grid');
+  var maxS = Math.max(sm.maxScore, 1);
+  var cssW = cv.clientWidth || 360, dpr = window.devicePixelRatio || 1;
+  var cell = cssW / (maxS + 1);
+  var cssH = Math.ceil(cell * (maxS + 1)) + 16;
+  cv.width = cssW * dpr; cv.height = cssH * dpr;
+  cv.style.height = cssH + 'px';
+  var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+  ctx.clearRect(0,0,cssW,cssH);
+  var styles = getComputedStyle(document.documentElement);
+  var dim = styles.getPropertyValue('--dim').trim() || '#8FA098';
+  var line = styles.getPropertyValue('--line').trim() || '#25332C';
+  var maxCount = 1;
+  Object.keys(sm.map).forEach(function(k){ if (sm.map[k].count > maxCount) maxCount = sm.map[k].count; });
+  var logMax = Math.log(maxCount + 1);
+  // y axis: losing score, 0 at bottom
+  function px(w){ return w * cell; }
+  function py(l){ return (maxS - l) * cell; }
+  ctx.strokeStyle = line;
+  ctx.beginPath(); ctx.moveTo(px(0), py(0)); ctx.lineTo(px(maxS), py(maxS)); ctx.stroke(); // draw diagonal (draws)
+  Object.keys(sm.map).forEach(function(k){
+    var parts = k.split('-'), w = +parts[0], l = +parts[1];
+    var a = 0.3 + 0.7 * Math.log(sm.map[k].count + 1) / logMax;
+    ctx.fillStyle = 'rgba(240,179,74,' + a.toFixed(2) + ')';
+    ctx.fillRect(px(w), py(l), Math.max(cell, 1), Math.max(cell, 1));
+  });
+  ctx.fillStyle = dim; ctx.font = '10px "IBM Plex Mono", monospace';
+  for (var s = 0; s <= maxS; s += 50) {
+    ctx.fillText(String(s), px(s), cssH - 4);
+    if (s > 0 && s < maxS) ctx.fillText(String(s), 1, py(s) + 3);
+  }
+  if (!cv.__bound) {
+    cv.__bound = true;
+    cv.addEventListener('click', function(ev){
+      if (!state.sm) return;
+      var r = cv.getBoundingClientRect();
+      var mS = Math.max(state.sm.maxScore, 1);
+      var c = r.width / (mS + 1);
+      var w = Math.round((ev.clientX - r.left) / c);
+      var l = Math.round(mS - (ev.clientY - r.top) / c);
+      inspectCell(w, l);
+    });
+  }
+}
+function inspectCell(w0, l0){
+  var sm = state.sm, best = null, bestD = 1e9;
+  for (var dw = -4; dw <= 4; dw++) for (var dl = -4; dl <= 4; dl++) {
+    var w = w0 + dw, l = l0 + dl;
+    if (w < l || w < 0 || l < 0) continue;
+    var rec = sm.map[w + '-' + l];
+    if (rec) { var dist = dw*dw + dl*dl; if (dist < bestD) { bestD = dist; best = { key: w + '-' + l, rec: rec }; } }
+  }
+  var info = el('gridInfo');
+  if (!best) { info.textContent = 'Nothing near ' + Math.max(w0,l0) + '\u2013' + Math.min(w0,l0) + ' \u2014 unclaimed scorigami territory.'; return; }
+  var r = best.rec;
+  info.innerHTML = '<b>' + best.key + '</b> &middot; ' + r.count + (r.count === 1 ? ' time' : ' times') +
+    ' &middot; first ' + r.first.y + (r.count > 1 ? ' &middot; last ' + r.last.y : '');
+  var btn = document.createElement('button');
+  btn.className = 'clearx';
+  btn.textContent = 'List these games';
+  btn.onclick = function(){
+    var k = best.key;
+    resetForm();
+    state.extra.exactKey = k;
+    applyNow();
+    window.scrollTo({ top: el('scoreboard').offsetTop - 10, behavior: 'smooth' });
+  };
+  info.appendChild(btn);
+}
+
+/* ----- presets ----- */
+var PRESETS = {
+  draws:       { result:'D' },
+  thrillers:   { marMax:6, result:'any' },
+  demolitions: { marMin:100 },
+  shootouts:   { totMin:200 },
+  slogs:       { totMax:120 },
+  gf:          { stage:'gf' }
+};
+function resetForm(){
+  ['fTeam','fOpp','fVenue','fRnd'].forEach(function(id){ el(id).value=''; });
+  el('fRole').value='any'; el('fResult').value='any'; el('fDow').value='-1'; el('fStage').value='all';
+  ['fMarMin','fMarMax','fTotMin','fTotMax','fTsMin','fTsMax'].forEach(function(id){ el(id).value=''; });
+  state.extra = { special: null, mday: null, exactKey: null };
+  var yf = el('fYFrom'), yt = el('fYTo');
+  if (yf.options.length) { yf.selectedIndex = 0; yt.selectedIndex = yt.options.length - 1; }
+}
+function setFormFromFilters(f){
+  resetForm();
+  if (f.team) el('fTeam').value = f.team;
+  if (f.opp) el('fOpp').value = f.opp;
+  if (f.venue) el('fVenue').value = f.venue;
+  el('fRole').value = f.role || 'any';
+  el('fResult').value = f.result || 'any';
+  el('fDow').value = String(f.dow != null ? f.dow : -1);
+  el('fStage').value = f.stage || 'all';
+  if (f.rnd != null) el('fRnd').value = String(f.rnd);
+  if (f.yFrom != null) el('fYFrom').value = String(f.yFrom);
+  if (f.yTo != null) el('fYTo').value = String(f.yTo);
+  [['fMarMin','marMin'],['fMarMax','marMax'],['fTotMin','totMin'],['fTotMax','totMax'],['fTsMin','tsMin'],['fTsMax','tsMax']]
+    .forEach(function(p){ if (f[p[1]] != null) el(p[0]).value = String(f[p[1]]); });
+}
+function applyPreset(name){
+  if (name === 'fewergoals') { resetForm(); state.extra.special = 'fewergoals'; applyNow(); return; }
+  if (name === 'onthisday') {
+    resetForm();
+    var t = new Date();
+    state.extra.mday = ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2);
+    applyNow(); return;
+  }
+  resetForm();
+  var p = PRESETS[name] || {};
+  if (p.result) el('fResult').value = p.result;
+  if (p.stage) el('fStage').value = p.stage;
+  if (p.marMin != null) el('fMarMin').value = p.marMin;
+  if (p.marMax != null) el('fMarMax').value = p.marMax;
+  if (p.totMin != null) el('fTotMin').value = p.totMin;
+  if (p.totMax != null) el('fTotMax').value = p.totMax;
+  applyNow();
+}
+
+/* ----- CSV download ----- */
+function downloadCSV(){
+  var csv = toCSV(state.filtered);
+  var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'footylab-query-' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
+/* ----- wire-up ----- */
+function init(){
+  el('verTag').textContent = 'v' + APP_VERSION;
+  el('verFoot').textContent = 'v' + APP_VERSION;
+  var yf = el('yFrom'), yt = el('yTo');
+  for (var y = MIN_YEAR; y <= CUR_YEAR; y++) {
+    var o1 = document.createElement('option'); o1.value=y; o1.textContent=y; yf.appendChild(o1);
+    var o2 = document.createElement('option'); o2.value=y; o2.textContent=y; yt.appendChild(o2);
+  }
+  yf.value = Math.max(MIN_YEAR, 1990); yt.value = CUR_YEAR;
+  el('loadBtn').onclick = function(){
+    var a = +yf.value, b = +yt.value;
+    if (a > b) { var t=a; a=b; b=t; }
+    loadRange(a, b);
+  };
+  el('loadAllBtn').onclick = function(){ yf.value = MIN_YEAR; yt.value = CUR_YEAR; loadRange(MIN_YEAR, CUR_YEAR); };
+  el('applyBtn').onclick = applyNow;
+  el('resetBtn').onclick = function(){ resetForm(); applyNow(); };
+  el('csvBtn').onclick = downloadCSV;
+  el('shareBtn').onclick = function(){
+    var f = readFilters();
+    var h = buildHash(f, state.extra, [+yf.value, +yt.value], state.mode);
+    var url = location.origin + location.pathname + '#' + h;
+    function done(){ renderHint(['Link copied.']); }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, function(){ window.prompt('Copy this link:', url); });
+    else window.prompt('Copy this link:', url);
+  };
+  window.applyPending = function(){
+    var p = state.pending;
+    if (!p) return false;
+    state.pending = null;
+    setFormFromFilters(p.f);
+    state.extra = p.extra || { special: null, mday: null, exactKey: null };
+    applyNow();
+    if (p.mode && p.mode !== 'games') { state.mode = p.mode; render(); }
+    return true;
+  };
+  document.querySelectorAll('.chip').forEach(function(c){
+    c.onclick = function(){
+      var m = c.getAttribute('data-mode');
+      if (m) { state.mode = m; render(); }
+      else applyPreset(c.getAttribute('data-preset'));
+    };
+  });
+  window.addEventListener('resize', function(){
+    if (state.mode === 'games' && !el('histoWrap').hidden) { drawHisto(state.filtered); drawTrend(seasonSeries(state.filtered)); }
+    if (state.mode === 'scorigami' && state.sm) drawGrid(state.sm);
+  });
+  var ph = parseHash(location.hash);
+  if (ph && ph.years) {
+    yf.value = Math.max(MIN_YEAR, Math.min(ph.years[0], CUR_YEAR));
+    yt.value = Math.max(MIN_YEAR, Math.min(ph.years[1], CUR_YEAR));
+    state.pending = ph;
+    setStatus('Shared query detected \u2014 loading ' + yf.value + '\u2013' + yt.value + ' \u2026');
+    loadRange(+yf.value, +yt.value);
+  }
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+else init();
+
+})();
+</script>
+</body>
+</html>
