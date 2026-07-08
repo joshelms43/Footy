@@ -3,6 +3,15 @@
 All notable changes to FootyLab. Versions refer to `index.html` (the app) unless noted.
 Data source: [Squiggle API](https://api.squiggle.com.au/) — fetched server-side via `api/squiggle.js`, per Squiggle's API rules.
 
+## [0.6.0] — 2026-07-08
+### Added
+- Ladder time machine: full H&A ladder for any loaded season (season selector in the results header), computed from results with finals excluded; premiers, minor premiers and wooden spoon called out; top and bottom rows highlighted
+- Honour board: premierships (Grand Final wins), last flag, drought length, wooden spoons and last spoon — spoons derived from computed ladders, current season excluded
+- A surprise fact auto-shows when a data load completes
+
+### Changed
+- Chips regrouped under labelled Presets / Deep dives rows
+
 ## [0.5.0] — 2026-07-08
 ### Added
 - Computed historical ladder: entering-round positions derived from results alone (4-2-0 points, percentage tiebreak, H&A games only; finals annotated but never move the ladder) — no extra API calls
