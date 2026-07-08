@@ -3,6 +3,13 @@
 All notable changes to FootyLab. Versions refer to `index.html` (the app) unless noted.
 Data source: [Squiggle API](https://api.squiggle.com.au/) — fetched server-side via `api/squiggle.js`, per Squiggle's API rules.
 
+## [0.5.0] — 2026-07-08
+### Added
+- Computed historical ladder: entering-round positions derived from results alone (4-2-0 points, percentage tiebreak, H&A games only; finals annotated but never move the ladder) — no extra API calls
+- Giant killings analysis: wins by lower-ranked teams over higher-ranked, sorted by ladder gap entering the game (both teams min 5 games played)
+- Ladder positions in the game detail card ("entering: Richmond 2nd · Carlton 15th")
+- 🎲 Surprise me: serves a random genuine oddity drawn from only-ever scorelines, top turnarounds, giant killings and the records book
+
 ## [0.4.0] — 2026-07-08
 ### Added
 - Game detail drill-down: tap any result row for the full goals.behinds scoreline, result, day/venue context, scoreline rarity (count, first/last seen), and margin/total percentiles vs all loaded games
