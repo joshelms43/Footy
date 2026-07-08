@@ -3,6 +3,12 @@
   FOOTYLAB — AFL rare-occurrence engine
   -------------------------------------------------------------
   CHANGELOG
+  v0.7.0 (2026-07-08)
+    - Server-side dataset: loader now tries the repo-bundled
+      data/games.json first (built by the GitHub Actions data
+      factory) for an instant full-history load, live-refreshing
+      the current season via the proxy; falls back to per-year
+      proxy loading when the bundle is absent
   v0.6.0 (2026-07-08)
     - Ladder time machine: full H&A ladder for any loaded
       season, computed from results (finals excluded), with
@@ -386,7 +392,7 @@ tr.ladderspoon td{color:var(--bad)}
 <script>
 /* ============ FootyLab core ============ */
 'use strict';
-var APP_VERSION = '0.6.0';
+var APP_VERSION = '0.7.0';
 var API_BASE = '/api/squiggle';
 var MIN_YEAR = 1897;
 var CUR_YEAR = new Date().getFullYear();
@@ -416,6 +422,7 @@ var state = {
   extra: { special: null, mday: null, exactKey: null },  // chip-driven filters with no form control
   lastF: null,
   pending: null,      // parsed hash awaiting data load
+  staticTried: false, // bundled-dataset attempt made this session
   sm: null            // cached scoreMap for grid interaction
 };
 
@@ -1034,6 +1041,17 @@ function honourBoard(games, excludeSpoonYear){
   }).sort(function(a,b){ return b.flags - a.flags || (b.lastFlag||0) - (a.lastFlag||0) || (a.team < b.team ? -1 : 1); });
 }
 
+/* ---------- v0.7 pure core ---------- */
+function ingestStatic(list){
+  // group schema-v1 normalized games by season
+  var byYear = {};
+  for (var i = 0; i < list.length; i++) {
+    var g = list[i];
+    (byYear[g.y] || (byYear[g.y] = [])).push(g);
+  }
+  return byYear;
+}
+
 /* expose pure core for the test harness */
 if (typeof window !== 'undefined') {
   window.FL = { normalizeGame:normalizeGame, filterGames:filterGames, scorigamiFirsts:scorigamiFirsts,
@@ -1042,7 +1060,7 @@ if (typeof window !== 'undefined') {
     recordsBook:recordsBook, venueTable:venueTable, teamProfile:teamProfile, bestRuns:bestRuns,
     turnarounds:turnarounds, pctBelow:pctBelow,
     ordinal:ordinal, ladderAnnotations:ladderAnnotations, giantKillings:giantKillings, factText:factText,
-    seasonLadder:seasonLadder, honourBoard:honourBoard };
+    seasonLadder:seasonLadder, honourBoard:honourBoard, ingestStatic:ingestStatic };
 }
 
 /* ================= UI layer (browser only) ================= */
@@ -1746,9 +1764,49 @@ function init(){
   el('loadBtn').onclick = function(){
     var a = +yf.value, b = +yt.value;
     if (a > b) { var t=a; a=b; b=t; }
-    loadRange(a, b);
+    startLoad(a, b);
   };
-  el('loadAllBtn').onclick = function(){ yf.value = MIN_YEAR; yt.value = CUR_YEAR; loadRange(MIN_YEAR, CUR_YEAR); };
+  el('loadAllBtn').onclick = function(){ yf.value = MIN_YEAR; yt.value = CUR_YEAR; startLoad(MIN_YEAR, CUR_YEAR); };
+  function finishStatic(selFrom, selTo, built){
+    rebuildIndex();
+    el('filterSet').disabled = false;
+    populateSelectors();
+    var yfF = el('fYFrom'), ytF = el('fYTo');
+    if (yfF.querySelector('option[value="' + selFrom + '"]')) yfF.value = String(selFrom);
+    if (ytF.querySelector('option[value="' + selTo + '"]')) ytF.value = String(selTo);
+    if (!(window.applyPending && window.applyPending())) applyNow();
+    if (window.showFact) window.showFact();
+    setStatus('Loaded ' + fmtInt(state.games.length) + ' games instantly from the bundled dataset (built ' + built.slice(0,10) + '), current season refreshed live.');
+  }
+  function tryStaticLoad(selFrom, selTo){
+    return fetch('data/games.json', { cache: 'no-cache' })
+      .then(function(r){ if (!r.ok) throw new Error('no bundle'); return r.json(); })
+      .then(function(payload){
+        if (!payload || payload.v !== 1 || !payload.games || !payload.games.length) throw new Error('bad bundle');
+        state.byYear = ingestStatic(payload.games);
+        // live top-up of the current season through the proxy
+        return fetchYear(CUR_YEAR).then(function(curGames){
+          state.byYear[CUR_YEAR] = curGames;
+          finishStatic(selFrom, selTo, payload.built || '');
+          return true;
+        }).catch(function(){
+          finishStatic(selFrom, selTo, payload.built || '');
+          setStatus(el('loadStatus').textContent.replace('current season refreshed live.', 'current season as of dataset build (live refresh unavailable).'));
+          return true;
+        });
+      })
+      .catch(function(){ return false; });
+  }
+  function startLoad(a, b){
+    if (state.loading) return;
+    if (!state.staticTried) {
+      state.staticTried = true;
+      setStatus('Checking for bundled dataset\u2026');
+      tryStaticLoad(a, b).then(function(ok){ if (!ok) loadRange(a, b); });
+      return;
+    }
+    loadRange(a, b);
+  }
   el('applyBtn').onclick = applyNow;
   el('resetBtn').onclick = function(){ resetForm(); applyNow(); };
   el('csvBtn').onclick = downloadCSV;
@@ -1812,7 +1870,7 @@ function init(){
     yt.value = Math.max(MIN_YEAR, Math.min(ph.years[1], CUR_YEAR));
     state.pending = ph;
     setStatus('Shared query detected \u2014 loading ' + yf.value + '\u2013' + yt.value + ' \u2026');
-    loadRange(+yf.value, +yt.value);
+    startLoad(+yf.value, +yt.value);
   }
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
