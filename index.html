@@ -3,6 +3,15 @@
   FOOTYLAB — AFL rare-occurrence engine
   -------------------------------------------------------------
   CHANGELOG
+  v0.6.0 (2026-07-08)
+    - Ladder time machine: full H&A ladder for any loaded
+      season, computed from results (finals excluded), with
+      premiers / minor premiers / wooden spoon called out
+    - Honour board: flags, last flag, drought, wooden spoons
+      (spoons derived from computed ladders; current season
+      excluded)
+    - Chips regrouped under Presets / Deep dives labels
+    - A surprise fact auto-shows when a data load completes
   v0.5.0 (2026-07-08)
     - Computed historical ladder: entering-round positions
       derived from results (4-2-0 points, percentage tiebreak,
@@ -242,6 +251,15 @@ tr.detail .big{font-family:'IBM Plex Mono',monospace;font-size:14px}
 tr.detail b{color:var(--lamp)}
 .h2h canvas{display:block;margin-top:8px;width:100%;height:46px}
 .flip{color:var(--lamp);font-weight:600;white-space:nowrap}
+
+/* ---------- v0.6 additions ---------- */
+.chiplabel{
+  font-family:'Oswald',sans-serif;font-size:10px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--dim);align-self:center;margin-right:2px;
+}
+tr.laddertop td{color:var(--lamp-hi)}
+tr.ladderspoon td{color:var(--bad)}
+#ladderYear{padding:5px 8px}
 </style>
 </head>
 <body>
@@ -299,7 +317,7 @@ tr.detail b{color:var(--lamp)}
       <button class="btn ghost" id="factBtn">&#127922; Surprise me</button>
       <span class="hint" id="filterHint"></span>
     </div>
-    <div class="chips" id="presetChips">
+    <div class="chips"><span class="chiplabel">Presets</span>
       <button class="chip" data-preset="draws">Draws</button>
       <button class="chip" data-preset="thrillers">Thrillers &le;6</button>
       <button class="chip" data-preset="demolitions">Demolitions 100+</button>
@@ -308,11 +326,15 @@ tr.detail b{color:var(--lamp)}
       <button class="chip" data-preset="gf">Grand Finals</button>
       <button class="chip" data-preset="fewergoals">Won with fewer goals</button>
       <button class="chip" data-preset="onthisday">On this day</button>
+    </div>
+    <div class="chips"><span class="chiplabel">Deep dives</span>
       <button class="chip analysis" data-mode="scorigami">&#10038; Scorigami firsts</button>
       <button class="chip analysis" data-mode="streaks">Longest streaks</button>
       <button class="chip analysis" data-mode="records">Records book</button>
       <button class="chip analysis" data-mode="turnarounds">Turnarounds &#8635;</button>
       <button class="chip analysis" data-mode="giants">Giant killings</button>
+      <button class="chip analysis" data-mode="ladders">Ladders</button>
+      <button class="chip analysis" data-mode="honour">Honour board</button>
       <button class="chip analysis" data-mode="venues">Venue almanac</button>
       <button class="chip analysis" data-mode="profile">Team profile</button>
     </div>
@@ -349,6 +371,7 @@ tr.detail b{color:var(--lamp)}
   <div class="results-head">
     <h2 id="resultsTitle" style="margin:0">Results</h2>
     <span class="count" id="resultsCount"></span>
+    <select id="ladderYear" hidden aria-label="Ladder season"></select>
     <button class="btn ghost" id="csvBtn">Export CSV</button>
   </div>
   <div class="note" id="resultsNote"></div>
@@ -363,7 +386,7 @@ tr.detail b{color:var(--lamp)}
 <script>
 /* ============ FootyLab core ============ */
 'use strict';
-var APP_VERSION = '0.5.0';
+var APP_VERSION = '0.6.0';
 var API_BASE = '/api/squiggle';
 var MIN_YEAR = 1897;
 var CUR_YEAR = new Date().getFullYear();
@@ -504,6 +527,7 @@ function loadRange(from, to){
       el('filterSet').disabled = false;
       populateSelectors();
       if (!(window.applyPending && window.applyPending())) applyNow();
+      if (window.showFact) window.showFact();
     } else if (!state.failedYears.length) {
       setStatus('No games came back. If you\u2019re opening this file directly, note it needs its /api route \u2014 run it on the Vercel deployment.', true);
     } else if (state.failedYears.length === (to - from + 1)) {
@@ -959,6 +983,57 @@ function factText(tag, item){
   return '';
 }
 
+/* ---------- v0.6 pure core ---------- */
+function seasonLadder(games, year){
+  // Final H&A ladder for a season, computed from results. Finals excluded.
+  var table = {};
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    if (g.y !== year || g.fin !== 0) continue;
+    var h = table[g.ht] || (table[g.ht] = { t:g.ht, pld:0, w:0, l:0, d:0, pf:0, pa:0, pts:0 });
+    var a = table[g.at] || (table[g.at] = { t:g.at, pld:0, w:0, l:0, d:0, pf:0, pa:0, pts:0 });
+    h.pld++; a.pld++; h.pf += g.hs; h.pa += g.as; a.pf += g.as; a.pa += g.hs;
+    if (g.win === null) { h.d++; a.d++; h.pts += 2; a.pts += 2; }
+    else if (g.win === g.ht) { h.w++; a.l++; h.pts += 4; }
+    else { a.w++; h.l++; a.pts += 4; }
+  }
+  var rows = Object.keys(table).map(function(k){
+    var e = table[k];
+    e.pct = e.pa > 0 ? e.pf / e.pa * 100 : (e.pf > 0 ? 99999 : 100);
+    return e;
+  });
+  rows.sort(function(x,y){ return y.pts - x.pts || y.pct - x.pct || (x.t < y.t ? -1 : 1); });
+  return rows;
+}
+function honourBoard(games, excludeSpoonYear){
+  var years = {}, flags = {}, spoons = {};
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    years[g.y] = 1;
+    if (g.gf === 1 && g.win) {
+      var f = flags[g.win] || (flags[g.win] = { n:0, last:0 });
+      f.n++; if (g.y > f.last) f.last = g.y;
+    }
+  }
+  Object.keys(years).forEach(function(y){
+    y = +y;
+    if (excludeSpoonYear != null && y === excludeSpoonYear) return;
+    var lad = seasonLadder(games, y);
+    if (lad.length < 2) return;
+    var t = lad[lad.length - 1].t;
+    var s = spoons[t] || (spoons[t] = { n:0, last:0 });
+    s.n++; if (y > s.last) s.last = y;
+  });
+  var teams = {};
+  Object.keys(flags).forEach(function(t){ teams[t] = 1; });
+  Object.keys(spoons).forEach(function(t){ teams[t] = 1; });
+  return Object.keys(teams).map(function(t){
+    return { team:t,
+      flags: flags[t] ? flags[t].n : 0, lastFlag: flags[t] ? flags[t].last : null,
+      spoons: spoons[t] ? spoons[t].n : 0, lastSpoon: spoons[t] ? spoons[t].last : null };
+  }).sort(function(a,b){ return b.flags - a.flags || (b.lastFlag||0) - (a.lastFlag||0) || (a.team < b.team ? -1 : 1); });
+}
+
 /* expose pure core for the test harness */
 if (typeof window !== 'undefined') {
   window.FL = { normalizeGame:normalizeGame, filterGames:filterGames, scorigamiFirsts:scorigamiFirsts,
@@ -966,7 +1041,8 @@ if (typeof window !== 'undefined') {
     scoreMap:scoreMap, seasonSeries:seasonSeries, h2hSummary:h2hSummary, buildHash:buildHash, parseHash:parseHash,
     recordsBook:recordsBook, venueTable:venueTable, teamProfile:teamProfile, bestRuns:bestRuns,
     turnarounds:turnarounds, pctBelow:pctBelow,
-    ordinal:ordinal, ladderAnnotations:ladderAnnotations, giantKillings:giantKillings, factText:factText };
+    ordinal:ordinal, ladderAnnotations:ladderAnnotations, giantKillings:giantKillings, factText:factText,
+    seasonLadder:seasonLadder, honourBoard:honourBoard };
 }
 
 /* ================= UI layer (browser only) ================= */
@@ -1009,6 +1085,10 @@ function populateSelectors(){
   var yrs = Object.keys(years).map(Number).sort(function(a,b){return a-b;});
   fillYears(el('fYFrom'), yrs, yrs[0]);
   fillYears(el('fYTo'), yrs, yrs[yrs.length-1]);
+  var lSel = el('ladderYear'), lKeep = lSel.value;
+  lSel.innerHTML = '';
+  yrs.slice().reverse().forEach(function(y){ var o = document.createElement('option'); o.value = y; o.textContent = y; lSel.appendChild(o); });
+  lSel.value = (lKeep && years[lKeep]) ? lKeep : String(yrs[yrs.length-1]);
 }
 window.populateSelectors = populateSelectors;
 
@@ -1077,6 +1157,7 @@ function render(){
   el('h2h').hidden = true;         // renderGames unhides when team+opp set
   el('resultsPanel').hidden = false;
   el('csvBtn').style.display = mode === 'games' ? '' : 'none';
+  el('ladderYear').hidden = mode !== 'ladders';
   document.querySelectorAll('.chip.analysis').forEach(function(c){
     c.classList.toggle('on', c.getAttribute('data-mode') === mode);
   });
@@ -1086,8 +1167,56 @@ function render(){
   else if (mode === 'records') renderRecords();
   else if (mode === 'turnarounds') renderTurnarounds();
   else if (mode === 'giants') renderGiants();
+  else if (mode === 'ladders') renderLadders();
+  else if (mode === 'honour') renderHonour();
   else if (mode === 'venues') renderVenues();
   else renderProfile();
+}
+
+function renderLadders(){
+  var lSel = el('ladderYear');
+  var yr = +lSel.value || (state.games.length ? state.games[state.games.length-1].y : 0);
+  var rows = seasonLadder(state.games, yr);
+  el('resultsTitle').textContent = 'Ladder \u2014 ' + yr;
+  el('resultsCount').textContent = '';
+  var premiers = null;
+  for (var i = 0; i < state.games.length; i++) {
+    var g = state.games[i];
+    if (g.y === yr && g.gf === 1 && g.win) premiers = g.win;
+  }
+  var noteBits = ['H&A ladder computed from results; finals excluded from the table.'];
+  if (premiers) noteBits.push('Premiers: ' + premiers + '.');
+  if (rows.length) noteBits.push('Minor premiers: ' + rows[0].t + '.');
+  if (rows.length > 1) noteBits.push('Wooden spoon: ' + rows[rows.length-1].t + '.');
+  el('resultsNote').textContent = noteBits.join(' ');
+  var html = '<thead><tr><th>#</th><th>Team</th><th>Pld</th><th>W-L-D</th><th>PF</th><th>PA</th><th>%</th><th>Pts</th></tr></thead><tbody>';
+  if (!rows.length) html += '<tr><td colspan="8" class="empty">No home &amp; away games loaded for ' + yr + '.</td></tr>';
+  for (var j = 0; j < rows.length; j++) {
+    var r = rows[j];
+    var cls = j === 0 ? ' class="laddertop"' : (j === rows.length - 1 && rows.length > 1 ? ' class="ladderspoon"' : '');
+    var pctTxt = r.pct > 9999 ? '\u2014' : fmt1(r.pct);
+    html += '<tr' + cls + '><td class="num">' + (j+1) + '</td><td>' + esc(r.t) + '</td><td class="num">' + r.pld +
+      '</td><td class="num">' + r.w + '-' + r.l + '-' + r.d + '</td><td class="num">' + fmtInt(r.pf) +
+      '</td><td class="num">' + fmtInt(r.pa) + '</td><td class="num">' + pctTxt + '</td><td class="num"><b>' + r.pts + '</b></td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
+}
+
+function renderHonour(){
+  var rows = honourBoard(state.games, CUR_YEAR);
+  el('resultsTitle').textContent = 'Honour board';
+  el('resultsCount').textContent = '';
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Premierships = Grand Final wins in loaded data (' + loadedFrom + '\u2192); wooden spoons from computed H&A ladders, current season excluded. Load 1897\u2192 for the true board.';
+  var html = '<thead><tr><th>Team</th><th>Flags</th><th>Last flag</th><th>Drought</th><th>Spoons</th><th>Last spoon</th></tr></thead><tbody>';
+  if (!rows.length) html += '<tr><td colspan="6" class="empty">No Grand Finals or completed seasons in the loaded range.</td></tr>';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    html += '<tr><td>' + esc(r.team) + '</td><td class="num"><b>' + r.flags + '</b></td><td class="num">' + (r.lastFlag || '\u2014') +
+      '</td><td class="num">' + (r.flags ? (CUR_YEAR - r.lastFlag) + ' yrs' : '\u2014') +
+      '</td><td class="num">' + r.spoons + '</td><td class="num">' + (r.lastSpoon || '\u2014') + '</td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
 }
 
 function renderGiants(){
@@ -1646,6 +1775,8 @@ function init(){
   el('factBtn').onclick = showFact;
   el('factAgain').onclick = showFact;
   el('factClose').onclick = function(){ el('factBox').hidden = true; };
+  el('ladderYear').onchange = function(){ if (state.mode === 'ladders') renderLadders(); };
+  window.showFact = showFact;
   el('shareBtn').onclick = function(){
     var f = readFilters();
     var h = buildHash(f, state.extra, [+yf.value, +yt.value], state.mode);
