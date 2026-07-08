@@ -3,6 +3,15 @@
   FOOTYLAB — AFL rare-occurrence engine
   -------------------------------------------------------------
   CHANGELOG
+  v0.5.0 (2026-07-08)
+    - Computed historical ladder: entering-round positions
+      derived from results (4-2-0 points, percentage tiebreak,
+      H&A games only; finals annotated but don't move the ladder)
+    - Giant killings analysis: wins by lower-ranked teams over
+      higher-ranked, sorted by ladder gap (min 5 games played)
+    - Ladder positions shown in the game detail card
+    - Surprise me: random genuine oddity from only-ever
+      scorelines, turnarounds, giant killings and records
   v0.4.0 (2026-07-08)
     - Game detail drill-down: tap any result row for the full
       goals.behinds scoreline, scoreline rarity (count, first/
@@ -287,6 +296,7 @@ tr.detail b{color:var(--lamp)}
       <button class="btn" id="applyBtn">Apply filters</button>
       <button class="btn ghost" id="resetBtn">Reset</button>
       <button class="btn ghost" id="shareBtn">Share query</button>
+      <button class="btn ghost" id="factBtn">&#127922; Surprise me</button>
       <span class="hint" id="filterHint"></span>
     </div>
     <div class="chips" id="presetChips">
@@ -302,6 +312,7 @@ tr.detail b{color:var(--lamp)}
       <button class="chip analysis" data-mode="streaks">Longest streaks</button>
       <button class="chip analysis" data-mode="records">Records book</button>
       <button class="chip analysis" data-mode="turnarounds">Turnarounds &#8635;</button>
+      <button class="chip analysis" data-mode="giants">Giant killings</button>
       <button class="chip analysis" data-mode="venues">Venue almanac</button>
       <button class="chip analysis" data-mode="profile">Team profile</button>
     </div>
@@ -316,6 +327,7 @@ tr.detail b{color:var(--lamp)}
 </div>
 <div class="record" id="records" hidden></div>
 <div class="h2h" id="h2h" hidden></div>
+<div class="h2h" id="factBox" hidden><span id="factText"></span> <button class="clearx" id="factAgain">Another</button> <button class="clearx" id="factClose">&#10005;</button></div>
 
 <section class="panel" id="histoWrap" hidden>
   <h2>Margin spread <span style="letter-spacing:0;text-transform:none;color:var(--dim)">(6-point buckets)</span></h2>
@@ -351,7 +363,7 @@ tr.detail b{color:var(--lamp)}
 <script>
 /* ============ FootyLab core ============ */
 'use strict';
-var APP_VERSION = '0.4.0';
+var APP_VERSION = '0.5.0';
 var API_BASE = '/api/squiggle';
 var MIN_YEAR = 1897;
 var CUR_YEAR = new Date().getFullYear();
@@ -434,7 +446,7 @@ function rebuildIndex(){
   Object.keys(state.byYear).forEach(function(y){ all = all.concat(state.byYear[y]); });
   all.sort(function(a,b){ return a.dstr < b.dstr ? -1 : a.dstr > b.dstr ? 1 : (a.id - b.id); });
   state.games = all;
-  state.smAll = null; state.sortedMars = null; state.sortedTots = null;
+  state.smAll = null; state.sortedMars = null; state.sortedTots = null; state.ann = null; state.uniqueScores = null;
 }
 
 function loadRange(from, to){
@@ -865,13 +877,96 @@ function pctBelow(sorted, v){
   return lo / sorted.length * 100;
 }
 
+/* ---------- v0.5 pure core ---------- */
+function ordinal(n){
+  var m100 = n % 100, m10 = n % 10;
+  if (m100 >= 11 && m100 <= 13) return n + 'th';
+  return n + (m10 === 1 ? 'st' : m10 === 2 ? 'nd' : m10 === 3 ? 'rd' : 'th');
+}
+function ladderAnnotations(games){
+  // games must be chronologically sorted. Returns gameId -> entering-round
+  // ladder info. 4 pts win / 2 draw, percentage tiebreak; H&A results only
+  // move the ladder (finals are annotated with the standing ladder).
+  var byYear = {};
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    (byYear[g.y] || (byYear[g.y] = [])).push(g);
+  }
+  var out = {};
+  Object.keys(byYear).forEach(function(y){
+    var season = byYear[y], table = {};
+    season.forEach(function(g){
+      if (!table[g.ht]) table[g.ht] = { pts:0, pf:0, pa:0, pld:0 };
+      if (!table[g.at]) table[g.at] = { pts:0, pf:0, pa:0, pld:0 };
+    });
+    function snapshot(){
+      var rows = Object.keys(table).map(function(t){
+        var e = table[t];
+        return { t:t, pts:e.pts, pct: e.pa > 0 ? e.pf / e.pa * 100 : (e.pf > 0 ? 99999 : 100), pld:e.pld };
+      });
+      rows.sort(function(a,b){ return b.pts - a.pts || b.pct - a.pct || (a.t < b.t ? -1 : 1); });
+      var pos = {};
+      rows.forEach(function(r, i){ pos[r.t] = { pos: i + 1, pld: r.pld }; });
+      return { pos: pos, nTeams: rows.length };
+    }
+    var i = 0;
+    while (i < season.length) {
+      var d = season[i].dstr, snap = snapshot(), j = i;
+      while (j < season.length && season[j].dstr === d) {
+        var g = season[j];
+        out[g.id] = { hPos: snap.pos[g.ht].pos, aPos: snap.pos[g.at].pos,
+                      hPld: snap.pos[g.ht].pld, aPld: snap.pos[g.at].pld, nTeams: snap.nTeams };
+        j++;
+      }
+      for (var k = i; k < j; k++) {
+        var g2 = season[k];
+        if (g2.fin !== 0) continue;
+        var h = table[g2.ht], a = table[g2.at];
+        h.pld++; a.pld++; h.pf += g2.hs; h.pa += g2.as; a.pf += g2.as; a.pa += g2.hs;
+        if (g2.win === null) { h.pts += 2; a.pts += 2; }
+        else if (g2.win === g2.ht) h.pts += 4;
+        else a.pts += 4;
+      }
+      i = j;
+    }
+  });
+  return out;
+}
+function giantKillings(games, ann, minPlayed){
+  if (minPlayed == null) minPlayed = 5;
+  var out = [];
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    if (g.win === null) continue;
+    var a = ann[g.id];
+    if (!a) continue;
+    var winH = g.win === g.ht;
+    var winPos = winH ? a.hPos : a.aPos, losePos = winH ? a.aPos : a.hPos;
+    var winPld = winH ? a.hPld : a.aPld, losePld = winH ? a.aPld : a.hPld;
+    if (winPld < minPlayed || losePld < minPlayed) continue;
+    var gap = winPos - losePos;
+    if (gap > 0) out.push({ gap: gap, winPos: winPos, losePos: losePos, nTeams: a.nTeams, g: g });
+  }
+  out.sort(function(x,y){ return y.gap - x.gap || y.g.mar - x.g.mar || (x.g.dstr < y.g.dstr ? 1 : -1); });
+  return out;
+}
+function factText(tag, item){
+  function res(g){ return g.ht + ' ' + g.hs + '\u2013' + g.as + ' ' + g.at; }
+  if (tag === 'only') return 'The only ' + item.key + ' ever: ' + res(item.g) + ', ' + item.g.rname + ' ' + item.g.y + '.';
+  if (tag === 'turn') return 'Whiplash of ' + item.g1.y + ': ' + res(item.g1) + ' \u2192 ' + res(item.g2) + ' \u2014 a ' + item.swing + '-point swing' + (item.flipped ? ', result flipped' : '') + '.';
+  if (tag === 'giant') return 'Giant killing, ' + item.g.y + ' ' + item.g.rname + ': ' + ordinal(item.winPos) + '-placed ' + (item.g.win || '') + ' knocked off ' + ordinal(item.losePos) + ' by ' + item.g.mar + '.';
+  if (tag === 'record') return item.label + ': ' + item.num + (item.team ? ' \u2014 ' + item.team : '') + ' (' + item.g.y + ').';
+  return '';
+}
+
 /* expose pure core for the test harness */
 if (typeof window !== 'undefined') {
   window.FL = { normalizeGame:normalizeGame, filterGames:filterGames, scorigamiFirsts:scorigamiFirsts,
     longestStreaks:longestStreaks, computeStats:computeStats, toCSV:toCSV, dowFromDateStr:dowFromDateStr, scoreKey:scoreKey,
     scoreMap:scoreMap, seasonSeries:seasonSeries, h2hSummary:h2hSummary, buildHash:buildHash, parseHash:parseHash,
     recordsBook:recordsBook, venueTable:venueTable, teamProfile:teamProfile, bestRuns:bestRuns,
-    turnarounds:turnarounds, pctBelow:pctBelow };
+    turnarounds:turnarounds, pctBelow:pctBelow,
+    ordinal:ordinal, ladderAnnotations:ladderAnnotations, giantKillings:giantKillings, factText:factText };
 }
 
 /* ================= UI layer (browser only) ================= */
@@ -990,8 +1085,25 @@ function render(){
   else if (mode === 'streaks') renderStreaks();
   else if (mode === 'records') renderRecords();
   else if (mode === 'turnarounds') renderTurnarounds();
+  else if (mode === 'giants') renderGiants();
   else if (mode === 'venues') renderVenues();
   else renderProfile();
+}
+
+function renderGiants(){
+  var rows = giantKillings(state.games, getAnn(), 5).slice(0, 50);
+  el('resultsTitle').textContent = 'Giant killings';
+  el('resultsCount').textContent = '';
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Wins by lower-ranked teams over higher-ranked, by ladder gap entering the game. Ladder computed from results (4-2-0, percentage tiebreak, H&A only); both teams min 5 games played. ALL loaded seasons (' + loadedFrom + '\u2192). Top 50.';
+  var html = '<thead><tr><th>Gap</th><th>Ladder</th><th>Match</th><th>Mgn</th><th>Rd</th><th>Season</th></tr></thead><tbody>';
+  if (!rows.length) html += '<tr><td colspan="6" class="empty">No qualifying upsets in the loaded data.</td></tr>';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    html += '<tr><td class="num"><b>' + r.gap + '</b></td><td class="num">' + ordinal(r.winPos) + ' d ' + ordinal(r.losePos) +
+      '</td><td>' + matchHTML(r.g) + '</td><td class="num">' + r.g.mar + '</td><td>' + esc(rdLabel(r.g)) + '</td><td class="num">' + r.g.y + '</td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
 }
 
 function renderTurnarounds(){
@@ -1119,6 +1231,10 @@ function getSmAll(){
   if (!state.smAll) state.smAll = scoreMap(state.games);
   return state.smAll;
 }
+function getAnn(){
+  if (!state.ann) state.ann = ladderAnnotations(state.games);
+  return state.ann;
+}
 function fullScore(g){
   var h = esc(g.ht) + ' ' + g.hg + '.' + g.hb + ' (' + g.hs + ')';
   var a = esc(g.at) + ' ' + g.ag + '.' + g.ab + ' (' + g.as + ')';
@@ -1135,8 +1251,15 @@ function detailHTML(g){
   var mp = fmt1(pctBelow(state.sortedMars, g.mar));
   var tp = fmt1(pctBelow(state.sortedTots, g.tot));
   var res = g.win === null ? 'Draw' : esc(g.win) + ' by ' + g.mar;
+  var a = getAnn()[g.id], lad = '';
+  if (a) {
+    lad = (a.hPld === 0 && a.aPld === 0)
+      ? '<br>Season opener \u2014 no ladder yet'
+      : '<br>Ladder entering: ' + esc(g.ht) + ' <b>' + ordinal(a.hPos) + '</b> \u00B7 ' + esc(g.at) + ' <b>' + ordinal(a.aPos) + '</b> (of ' + a.nTeams + ')';
+  }
   return '<span class="big">' + fullScore(g) + '</span><br>' +
-    '<b>' + res + '</b> &middot; ' + esc(g.rname) + ' &middot; ' + DOW_NAME[g.dow] + ' ' + g.dstr + ' &middot; ' + esc(g.venue) + '<br>' +
+    '<b>' + res + '</b> &middot; ' + esc(g.rname) + ' &middot; ' + DOW_NAME[g.dow] + ' ' + g.dstr + ' &middot; ' + esc(g.venue) +
+    lad + '<br>' +
     rar + '<br>' +
     'margin bigger than <b>' + mp + '%</b> of loaded games &middot; total higher than <b>' + tp + '%</b>';
 }
@@ -1500,6 +1623,29 @@ function init(){
   el('applyBtn').onclick = applyNow;
   el('resetBtn').onclick = function(){ resetForm(); applyNow(); };
   el('csvBtn').onclick = downloadCSV;
+  function showFact(){
+    if (!state.games.length) return;
+    if (!state.uniqueScores) {
+      var sm = getSmAll(); state.uniqueScores = [];
+      Object.keys(sm.map).forEach(function(k){ if (sm.map[k].count === 1) state.uniqueScores.push({ key: k, g: sm.map[k].first }); });
+    }
+    var pools = [];
+    if (state.uniqueScores.length) pools.push(['only', state.uniqueScores]);
+    var ta = turnarounds(state.games).slice(0, 20);
+    if (ta.length) pools.push(['turn', ta]);
+    var gi = giantKillings(state.games, getAnn(), 5).slice(0, 30);
+    if (gi.length) pools.push(['giant', gi]);
+    var rb = recordsBook(state.games);
+    if (rb.length) pools.push(['record', rb]);
+    if (!pools.length) return;
+    var p = pools[Math.floor(Math.random() * pools.length)];
+    var item = p[1][Math.floor(Math.random() * p[1].length)];
+    el('factText').textContent = factText(p[0], item);
+    el('factBox').hidden = false;
+  }
+  el('factBtn').onclick = showFact;
+  el('factAgain').onclick = showFact;
+  el('factClose').onclick = function(){ el('factBox').hidden = true; };
   el('shareBtn').onclick = function(){
     var f = readFilters();
     var h = buildHash(f, state.extra, [+yf.value, +yt.value], state.mode);
