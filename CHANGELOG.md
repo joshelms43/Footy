@@ -3,6 +3,13 @@
 All notable changes to FootyLab. Versions refer to `index.html` (the app) unless noted.
 Data source: [Squiggle API](https://api.squiggle.com.au/) — fetched server-side via `api/squiggle.js`, per Squiggle's API rules.
 
+## [0.3.0] — 2026-07-08
+### Added
+- Records book analysis: extremes over loaded data — highest/lowest team scores, highest losing score, lowest winning score, biggest margin, aggregates, most goals/behinds by a team, biggest Grand Final margin, highest-scoring and most recent draws
+- Venue almanac: per-ground games hosted, span, home W-L-D and win% (draws excluded), average total, biggest margin
+- Team profile: all-time record, win% and AFL-style percentage, best win streak and worst losing run, biggest win/loss, most-played opponent, decade-by-decade breakdown
+- "Most recent" line under query stats with days-since — drought spotting for any filter combination
+
 ## [0.2.0] — 2026-07-08
 ### Added
 - Scorigami grid: interactive score-pair heatmap; tap a cell to inspect a scoreline and list its actual games
