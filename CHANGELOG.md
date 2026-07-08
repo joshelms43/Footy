@@ -3,6 +3,13 @@
 All notable changes to FootyLab. Versions refer to `index.html` (the app) unless noted.
 Data source: [Squiggle API](https://api.squiggle.com.au/) — fetched server-side via `api/squiggle.js`, per Squiggle's API rules.
 
+## [0.4.0] — 2026-07-08
+### Added
+- Game detail drill-down: tap any result row for the full goals.behinds scoreline, result, day/venue context, scoreline rarity (count, first/last seen), and margin/total percentiles vs all loaded games
+- Turnarounds analysis: biggest same-season rematch swings between the same two teams, with flipped-result badges
+- Head-to-head margin sparkline inside the rivalry card (amber = selected team won, red = lost, tick = draw)
+- Month filter
+
 ## [0.3.0] — 2026-07-08
 ### Added
 - Records book analysis: extremes over loaded data — highest/lowest team scores, highest losing score, lowest winning score, biggest margin, aggregates, most goals/behinds by a team, biggest Grand Final margin, highest-scoring and most recent draws
