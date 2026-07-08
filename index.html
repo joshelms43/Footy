@@ -3,6 +3,15 @@
   FOOTYLAB — AFL rare-occurrence engine
   -------------------------------------------------------------
   CHANGELOG
+  v0.3.0 (2026-07-08)
+    - Records book analysis: extremes over loaded data (highest
+      losing score, lowest winning score, most goals/behinds,
+      aggregates, biggest GF margin, draw records)
+    - Venue almanac: per-ground games, span, home W-L-D and
+      win%, avg total, biggest margin
+    - Team profile: all-time and decade-by-decade record,
+      percentage, best streaks, biggest win/loss, top opponent
+    - "Most recent" line under query stats (with days-since)
   v0.2.0 (2026-07-08)
     - Scorigami grid: interactive score-pair heatmap; tap a
       cell to inspect a scoreline and list its actual games
@@ -270,6 +279,9 @@ footer a{color:var(--dim)}
       <button class="chip" data-preset="onthisday">On this day</button>
       <button class="chip analysis" data-mode="scorigami">&#10038; Scorigami firsts</button>
       <button class="chip analysis" data-mode="streaks">Longest streaks</button>
+      <button class="chip analysis" data-mode="records">Records book</button>
+      <button class="chip analysis" data-mode="venues">Venue almanac</button>
+      <button class="chip analysis" data-mode="profile">Team profile</button>
     </div>
   </fieldset>
 </section>
@@ -317,7 +329,7 @@ footer a{color:var(--dim)}
 <script>
 /* ============ FootyLab core ============ */
 'use strict';
-var APP_VERSION = '0.2.0';
+var APP_VERSION = '0.3.0';
 var API_BASE = '/api/squiggle';
 var MIN_YEAR = 1897;
 var CUR_YEAR = new Date().getFullYear();
@@ -694,11 +706,114 @@ function parseHash(h){
   };
 }
 
+/* ---------- v0.3 pure core ---------- */
+function recordsBook(games){
+  if (!games.length) return [];
+  var hiScore=null, loScore=null, hiLose=null, loWin=null, hiAgg=null, loAgg=null,
+      hiMar=null, hiGoals=null, hiBeh=null, gfMar=null, lastDraw=null, hiDraw=null;
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    var sides = [[g.hs, g.hg, g.hb, g.ht], [g.as, g.ag, g.ab, g.at]];
+    for (var j = 0; j < 2; j++) {
+      var s = sides[j][0], goals = sides[j][1], beh = sides[j][2], team = sides[j][3];
+      if (!hiScore || s > hiScore.num) hiScore = { num:s, team:team, g:g };
+      if (!loScore || s < loScore.num) loScore = { num:s, team:team, g:g };
+      if (!hiGoals || goals > hiGoals.num) hiGoals = { num:goals, team:team, g:g };
+      if (!hiBeh || beh > hiBeh.num) hiBeh = { num:beh, team:team, g:g };
+      if (g.win !== null) {
+        if (team === g.win) { if (!loWin || s < loWin.num) loWin = { num:s, team:team, g:g }; }
+        else { if (!hiLose || s > hiLose.num) hiLose = { num:s, team:team, g:g }; }
+      }
+    }
+    if (!hiAgg || g.tot > hiAgg.num) hiAgg = { num:g.tot, g:g };
+    if (!loAgg || g.tot < loAgg.num) loAgg = { num:g.tot, g:g };
+    if (!hiMar || g.mar > hiMar.num) hiMar = { num:g.mar, team:g.win, g:g };
+    if (g.gf === 1 && (!gfMar || g.mar > gfMar.num)) gfMar = { num:g.mar, team:g.win, g:g };
+    if (g.win === null) {
+      if (!lastDraw || g.dstr > lastDraw.g.dstr) lastDraw = { num:g.tot, g:g };
+      if (!hiDraw || g.tot > hiDraw.num) hiDraw = { num:g.tot, g:g };
+    }
+  }
+  var out = [];
+  function push(key, label, rec){ if (rec) out.push({ key:key, label:label, num:rec.num, team:rec.team || null, g:rec.g }); }
+  push('hiScore','Highest team score',hiScore);
+  push('loScore','Lowest team score',loScore);
+  push('hiLose','Highest losing score',hiLose);
+  push('loWin','Lowest winning score',loWin);
+  push('hiMar','Biggest margin',hiMar);
+  push('hiAgg','Highest aggregate',hiAgg);
+  push('loAgg','Lowest aggregate',loAgg);
+  push('hiGoals','Most goals by a team',hiGoals);
+  push('hiBeh','Most behinds by a team',hiBeh);
+  push('gfMar','Biggest Grand Final margin',gfMar);
+  push('hiDraw','Highest-scoring draw',hiDraw);
+  push('lastDraw','Most recent draw',lastDraw);
+  return out;
+}
+function venueTable(games){
+  var by = {};
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    var v = by[g.venue] || (by[g.venue] = { venue:g.venue, n:0, y0:g.y, y1:g.y, tot:0, hw:0, hl:0, hd:0, maxMar:null });
+    v.n++; v.tot += g.tot;
+    if (g.y < v.y0) v.y0 = g.y;
+    if (g.y > v.y1) v.y1 = g.y;
+    if (g.win === null) v.hd++;
+    else if (g.win === g.ht) v.hw++;
+    else v.hl++;
+    if (!v.maxMar || g.mar > v.maxMar.mar) v.maxMar = g;
+  }
+  return Object.keys(by).map(function(k){ var v = by[k]; v.avgTot = v.tot / v.n; return v; })
+    .sort(function(a,b){ return b.n - a.n || (a.venue < b.venue ? -1 : 1); });
+}
+function bestRuns(mine, team){
+  // mine: chronologically sorted games all involving `team`; draws break runs
+  var cur = null, bestW = null, bestL = null;
+  function close(){
+    if (!cur) return;
+    var slot = cur.type === 'W' ? (bestW = (!bestW || cur.len > bestW.len || (cur.len === bestW.len && cur.to > bestW.to)) ? cur : bestW)
+                                : (bestL = (!bestL || cur.len > bestL.len || (cur.len === bestL.len && cur.to > bestL.to)) ? cur : bestL);
+    cur = null; return slot;
+  }
+  for (var i = 0; i < mine.length; i++) {
+    var g = mine[i], o = g.win === null ? 'D' : (g.win === team ? 'W' : 'L');
+    if (o === 'D') { close(); continue; }
+    if (cur && cur.type === o) { cur.len++; cur.to = g.dstr; }
+    else { close(); cur = { type:o, len:1, from:g.dstr, to:g.dstr }; }
+  }
+  close();
+  return { bestW: bestW, bestL: bestL };
+}
+function teamProfile(games, team){
+  var mine = games.filter(function(g){ return g.ht === team || g.at === team; });
+  if (!mine.length) return null;
+  var w=0, l=0, d=0, pf=0, pa=0, bigWin=null, bigLoss=null, decades={}, opps={};
+  for (var i = 0; i < mine.length; i++) {
+    var g = mine[i], isH = g.ht === team;
+    var opp = isH ? g.at : g.ht;
+    pf += isH ? g.hs : g.as; pa += isH ? g.as : g.hs;
+    var dec = Math.floor(g.y / 10) * 10;
+    var D = decades[dec] || (decades[dec] = { dec:dec, n:0, w:0, l:0, d:0 });
+    var O = opps[opp] || (opps[opp] = { name:opp, n:0, w:0, l:0, d:0 });
+    D.n++; O.n++;
+    if (g.win === null) { d++; D.d++; O.d++; }
+    else if (g.win === team) { w++; D.w++; O.w++; if (!bigWin || g.mar > bigWin.mar) bigWin = g; }
+    else { l++; D.l++; O.l++; if (!bigLoss || g.mar > bigLoss.mar) bigLoss = g; }
+  }
+  var runs = bestRuns(mine, team);
+  var decArr = Object.keys(decades).map(function(k){ return decades[k]; }).sort(function(a,b){ return a.dec - b.dec; });
+  var oppArr = Object.keys(opps).map(function(k){ return opps[k]; }).sort(function(a,b){ return b.n - a.n || (a.name < b.name ? -1 : 1); });
+  return { team:team, n:mine.length, w:w, l:l, d:d, pf:pf, pa:pa,
+    pct: pa ? pf / pa * 100 : 0, bigWin:bigWin, bigLoss:bigLoss,
+    decades:decArr, topOpp:oppArr[0], bestW:runs.bestW, bestL:runs.bestL };
+}
+
 /* expose pure core for the test harness */
 if (typeof window !== 'undefined') {
   window.FL = { normalizeGame:normalizeGame, filterGames:filterGames, scorigamiFirsts:scorigamiFirsts,
     longestStreaks:longestStreaks, computeStats:computeStats, toCSV:toCSV, dowFromDateStr:dowFromDateStr, scoreKey:scoreKey,
-    scoreMap:scoreMap, seasonSeries:seasonSeries, h2hSummary:h2hSummary, buildHash:buildHash, parseHash:parseHash };
+    scoreMap:scoreMap, seasonSeries:seasonSeries, h2hSummary:h2hSummary, buildHash:buildHash, parseHash:parseHash,
+    recordsBook:recordsBook, venueTable:venueTable, teamProfile:teamProfile, bestRuns:bestRuns };
 }
 
 /* ================= UI layer (browser only) ================= */
@@ -813,7 +928,10 @@ function render(){
   });
   if (mode === 'games') renderGames();
   else if (mode === 'scorigami') renderScorigami();
-  else renderStreaks();
+  else if (mode === 'streaks') renderStreaks();
+  else if (mode === 'records') renderRecords();
+  else if (mode === 'venues') renderVenues();
+  else renderProfile();
 }
 
 function renderH2H(f){
@@ -844,6 +962,13 @@ function renderGames(){
   var rec = '';
   if (s.maxMar) rec += 'Biggest margin: <b>' + esc(s.maxMar.win || 'Draw') + ' by ' + s.maxMar.mar + '</b> (' + s.maxMar.dstr + ') &middot; ';
   if (s.maxTot) rec += 'Highest total: <b>' + s.maxTot.tot + '</b> \u2014 ' + esc(s.maxTot.ht) + ' v ' + esc(s.maxTot.at) + ' (' + s.maxTot.y + ')';
+  if (s.n) {
+    var latest = null;
+    for (var li = 0; li < state.filtered.length; li++) if (!latest || state.filtered[li].dstr > latest.dstr) latest = state.filtered[li];
+    var days = Math.floor((Date.now() - new Date(latest.dstr + 'T00:00:00Z').getTime()) / 86400000);
+    var ago = days <= 0 ? 'today' : days === 1 ? '1 day ago' : fmtInt(days) + ' days ago';
+    rec += (rec ? '<br>' : '') + 'Most recent: <b>' + esc(latest.ht) + ' ' + latest.hs + '\u2013' + latest.as + ' ' + esc(latest.at) + '</b> (' + latest.dstr + ', ' + ago + ')';
+  }
   el('records').innerHTML = rec;
   drawHisto(state.filtered);
   renderH2H(state.lastF);
@@ -905,6 +1030,77 @@ function renderStreaks(){
     return h + '</tbody>';
   }
   el('resultsTable').innerHTML = block('Winning streaks \u2014 top 10', st.wins) + block('Losing streaks \u2014 top 10', st.losses);
+}
+
+function renderRecords(){
+  var rows = recordsBook(state.games);
+  el('resultsTitle').textContent = 'Records book';
+  el('resultsCount').textContent = '';
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Computed over ALL loaded seasons (' + loadedFrom + '\u2192), ignoring filters.';
+  var html = '<thead><tr><th>Record</th><th>Value</th><th>Match</th><th>Date</th></tr></thead><tbody>';
+  if (!rows.length) html += '<tr><td colspan="4" class="empty">Load some seasons first.</td></tr>';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    html += '<tr><td>' + esc(r.label) + '</td><td class="num"><b>' + r.num + '</b>' + (r.team ? ' \u2014 ' + esc(r.team) : '') +
+      '</td><td>' + matchHTML(r.g) + '</td><td class="num">' + r.g.dstr + '</td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
+}
+
+function renderVenues(){
+  var rows = venueTable(state.games);
+  el('resultsTitle').textContent = 'Venue almanac';
+  el('resultsCount').textContent = fmtInt(rows.length) + ' grounds';
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Computed over ALL loaded seasons (' + loadedFrom + '\u2192), ignoring filters. Home win% excludes draws. Showing top ' + Math.min(rows.length, 60) + ' by games hosted.';
+  var html = '<thead><tr><th>Venue</th><th>Games</th><th>Span</th><th>Home W-L-D</th><th>Home win%</th><th>Avg total</th><th>Biggest</th></tr></thead><tbody>';
+  var show = rows.slice(0, 60);
+  for (var i = 0; i < show.length; i++) {
+    var v = show[i];
+    var pct = (v.hw + v.hl) ? fmt1(v.hw / (v.hw + v.hl) * 100) + '%' : '\u2014';
+    var big = v.maxMar ? (v.maxMar.win === null ? 'draw' : esc(v.maxMar.win) + ' by ' + v.maxMar.mar + ' (' + v.maxMar.y + ')') : '\u2014';
+    html += '<tr><td>' + esc(v.venue) + '</td><td class="num">' + fmtInt(v.n) + '</td><td class="num">' + v.y0 + '\u2013' + v.y1 +
+      '</td><td class="num">' + v.hw + '-' + v.hl + '-' + v.hd + '</td><td class="num">' + pct +
+      '</td><td class="num">' + fmt1(v.avgTot) + '</td><td>' + big + '</td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
+}
+
+function renderProfile(){
+  var team = el('fTeam').value;
+  el('resultsTitle').textContent = 'Team profile';
+  el('resultsCount').textContent = team || '';
+  if (!team) {
+    el('resultsNote').textContent = 'Pick a team in the Team filter above, then tap Team profile again.';
+    el('resultsTable').innerHTML = '<tbody><tr><td class="empty">No team selected.</td></tr></tbody>';
+    return;
+  }
+  var p = teamProfile(state.games, team);
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Computed over ALL loaded seasons (' + loadedFrom + '\u2192), ignoring other filters.';
+  if (!p) {
+    el('resultsTable').innerHTML = '<tbody><tr><td class="empty">No games found for ' + esc(team) + ' in the loaded seasons.</td></tr></tbody>';
+    return;
+  }
+  var winPct = p.n ? fmt1((p.w + p.d * 0.5) / p.n * 100) : '0.0';
+  var html = '<tbody>';
+  html += '<tr><th colspan="5">All-time (loaded)</th></tr>';
+  html += '<tr><td>Record</td><td class="num" colspan="4"><b>' + p.w + '-' + p.l + '-' + p.d + '</b> from ' + fmtInt(p.n) + ' games &middot; win ' + winPct + '% &middot; percentage ' + fmt1(p.pct) + '</td></tr>';
+  html += '<tr><td>Points</td><td class="num" colspan="4">for ' + fmtInt(p.pf) + ' \u2013 against ' + fmtInt(p.pa) + '</td></tr>';
+  if (p.bigWin) html += '<tr><td>Biggest win</td><td colspan="4">by <b>' + p.bigWin.mar + '</b> \u2014 ' + matchHTML(p.bigWin) + ' (' + p.bigWin.y + ')</td></tr>';
+  if (p.bigLoss) html += '<tr><td>Biggest loss</td><td colspan="4">by <b>' + p.bigLoss.mar + '</b> \u2014 ' + matchHTML(p.bigLoss) + ' (' + p.bigLoss.y + ')</td></tr>';
+  if (p.bestW) html += '<tr><td>Best win streak</td><td class="num" colspan="4">' + p.bestW.len + ' (' + p.bestW.from + ' \u2192 ' + p.bestW.to + ')</td></tr>';
+  if (p.bestL) html += '<tr><td>Worst losing run</td><td class="num" colspan="4">' + p.bestL.len + ' (' + p.bestL.from + ' \u2192 ' + p.bestL.to + ')</td></tr>';
+  if (p.topOpp) html += '<tr><td>Most-played opponent</td><td colspan="4">' + esc(p.topOpp.name) + ' \u2014 ' + p.topOpp.n + ' games (' + p.topOpp.w + '-' + p.topOpp.l + '-' + p.topOpp.d + ')</td></tr>';
+  html += '<tr><th colspan="5">By decade</th></tr>';
+  html += '<tr><th>Decade</th><th>P</th><th>W-L-D</th><th>Win%</th><th></th></tr>';
+  for (var i = 0; i < p.decades.length; i++) {
+    var dd = p.decades[i];
+    var dp = dd.n ? fmt1((dd.w + dd.d * 0.5) / dd.n * 100) : '0.0';
+    html += '<tr><td class="num">' + dd.dec + 's</td><td class="num">' + dd.n + '</td><td class="num">' + dd.w + '-' + dd.l + '-' + dd.d + '</td><td class="num">' + dp + '%</td><td></td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
 }
 
 function bindSortHeaders(){
