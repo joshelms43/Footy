@@ -3,6 +3,14 @@
   FOOTYLAB — AFL rare-occurrence engine
   -------------------------------------------------------------
   CHANGELOG
+  v0.4.0 (2026-07-08)
+    - Game detail drill-down: tap any result row for the full
+      goals.behinds scoreline, scoreline rarity (count, first/
+      last), and margin/total percentiles vs all loaded games
+    - Turnarounds analysis: biggest same-season rematch swings,
+      with flipped-result badges
+    - H2H margin sparkline inside the rivalry card
+    - Month filter
   v0.3.0 (2026-07-08)
     - Records book analysis: extremes over loaded data (highest
       losing score, lowest winning score, most goals/behinds,
@@ -214,6 +222,17 @@ footer a{color:var(--dim)}
   color:var(--lamp);font-size:12px;padding:2px 10px;cursor:pointer;
 }
 .clearx:hover{background:var(--lamp);color:#1A1408}
+
+/* ---------- v0.4 additions ---------- */
+#resultsTable tbody tr[data-i]{cursor:pointer}
+tr.detail td{
+  background:var(--board2);white-space:normal;font-size:12.5px;
+  line-height:1.75;cursor:default;padding:10px 12px;
+}
+tr.detail .big{font-family:'IBM Plex Mono',monospace;font-size:14px}
+tr.detail b{color:var(--lamp)}
+.h2h canvas{display:block;margin-top:8px;width:100%;height:46px}
+.flip{color:var(--lamp);font-weight:600;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -250,6 +269,8 @@ footer a{color:var(--dim)}
       <div class="field"><label for="fVenue">Venue</label><select id="fVenue"></select></div>
       <div class="field"><label for="fDow">Day</label>
         <select id="fDow"><option value="-1">Any day</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></div>
+      <div class="field"><label for="fMonth">Month</label>
+        <select id="fMonth"><option value="">Any month</option><option value="1">January</option><option value="2">February</option><option value="3">March</option><option value="4">April</option><option value="5">May</option><option value="6">June</option><option value="7">July</option><option value="8">August</option><option value="9">September</option><option value="10">October</option><option value="11">November</option><option value="12">December</option></select></div>
       <div class="field"><label for="fStage">Stage</label>
         <select id="fStage"><option value="all">All games</option><option value="ha">Home &amp; away</option><option value="finals">Finals only</option><option value="gf">Grand Finals only</option></select></div>
       <div class="field"><label for="fRnd">Round</label><select id="fRnd"></select></div>
@@ -280,6 +301,7 @@ footer a{color:var(--dim)}
       <button class="chip analysis" data-mode="scorigami">&#10038; Scorigami firsts</button>
       <button class="chip analysis" data-mode="streaks">Longest streaks</button>
       <button class="chip analysis" data-mode="records">Records book</button>
+      <button class="chip analysis" data-mode="turnarounds">Turnarounds &#8635;</button>
       <button class="chip analysis" data-mode="venues">Venue almanac</button>
       <button class="chip analysis" data-mode="profile">Team profile</button>
     </div>
@@ -329,7 +351,7 @@ footer a{color:var(--dim)}
 <script>
 /* ============ FootyLab core ============ */
 'use strict';
-var APP_VERSION = '0.3.0';
+var APP_VERSION = '0.4.0';
 var API_BASE = '/api/squiggle';
 var MIN_YEAR = 1897;
 var CUR_YEAR = new Date().getFullYear();
@@ -412,6 +434,7 @@ function rebuildIndex(){
   Object.keys(state.byYear).forEach(function(y){ all = all.concat(state.byYear[y]); });
   all.sort(function(a,b){ return a.dstr < b.dstr ? -1 : a.dstr > b.dstr ? 1 : (a.id - b.id); });
   state.games = all;
+  state.smAll = null; state.sortedMars = null; state.sortedTots = null;
 }
 
 function loadRange(from, to){
@@ -489,6 +512,7 @@ function filterGames(games, f){
     if (f.stage === 'gf' && g.gf !== 1) return false;
     if (f.rnd != null && g.rnd !== f.rnd) return false;
     if (f.mday && g.dstr.slice(5) !== f.mday) return false;
+    if (f.month != null && +g.dstr.slice(5,7) !== f.month) return false;
     if (f.exactKey && scoreKey(g) !== f.exactKey) return false;
     if (f.special === 'fewergoals') {
       if (g.win === null) return false;
@@ -674,6 +698,7 @@ function buildHash(f, extra, years, mode){
   add('o', f.opp); add('v', f.venue);
   if (f.dow >= 0) add('d', f.dow);
   if (f.stage !== 'all') add('st', f.stage);
+  add('mo', f.month);
   add('yf', f.yFrom); add('yt', f.yTo);
   add('mm', f.marMin); add('mx', f.marMax);
   add('tm', f.totMin); add('tx', f.totMax);
@@ -697,7 +722,7 @@ function parseHash(h){
     f: {
       team: sp.get('t') || '', role: sp.get('role') || 'any', result: sp.get('res') || 'any',
       opp: sp.get('o') || '', venue: sp.get('v') || '',
-      dow: sp.get('d') == null ? -1 : +sp.get('d'), stage: sp.get('st') || 'all',
+      dow: sp.get('d') == null ? -1 : +sp.get('d'), stage: sp.get('st') || 'all', month: num('mo'),
       yFrom: num('yf'), yTo: num('yt'),
       marMin: num('mm'), marMax: num('mx'), totMin: num('tm'), totMax: num('tx'),
       tsMin: num('sm'), tsMax: num('sx'), rnd: num('r')
@@ -808,12 +833,45 @@ function teamProfile(games, team){
     decades:decArr, topOpp:oppArr[0], bestW:runs.bestW, bestL:runs.bestL };
 }
 
+/* ---------- v0.4 pure core ---------- */
+function turnarounds(games){
+  // same-season rematches; swing = |signed margin change| for a fixed reference team
+  var by = {};
+  for (var i = 0; i < games.length; i++) {
+    var g = games[i];
+    var a = g.ht < g.at ? g.ht : g.at, b = g.ht < g.at ? g.at : g.ht;
+    var k = a + '|' + b + '|' + g.y;
+    (by[k] || (by[k] = { ref: a, list: [] })).list.push(g);
+  }
+  var out = [];
+  Object.keys(by).forEach(function(k){
+    var e = by[k];
+    if (e.list.length < 2) return;
+    function sgn(g){ return g.win === null ? 0 : (g.win === e.ref ? g.mar : -g.mar); }
+    for (var i = 1; i < e.list.length; i++) {
+      var g1 = e.list[i-1], g2 = e.list[i];
+      var s1 = sgn(g1), s2 = sgn(g2);
+      out.push({ swing: Math.abs(s2 - s1), flipped: (s1 > 0 && s2 < 0) || (s1 < 0 && s2 > 0), g1: g1, g2: g2 });
+    }
+  });
+  out.sort(function(x,y){ return y.swing - x.swing || (x.g2.dstr < y.g2.dstr ? 1 : -1); });
+  return out;
+}
+function pctBelow(sorted, v){
+  // percentage of values strictly below v (sorted ascending)
+  if (!sorted.length) return 0;
+  var lo = 0, hi = sorted.length;
+  while (lo < hi) { var m = (lo + hi) >> 1; if (sorted[m] < v) lo = m + 1; else hi = m; }
+  return lo / sorted.length * 100;
+}
+
 /* expose pure core for the test harness */
 if (typeof window !== 'undefined') {
   window.FL = { normalizeGame:normalizeGame, filterGames:filterGames, scorigamiFirsts:scorigamiFirsts,
     longestStreaks:longestStreaks, computeStats:computeStats, toCSV:toCSV, dowFromDateStr:dowFromDateStr, scoreKey:scoreKey,
     scoreMap:scoreMap, seasonSeries:seasonSeries, h2hSummary:h2hSummary, buildHash:buildHash, parseHash:parseHash,
-    recordsBook:recordsBook, venueTable:venueTable, teamProfile:teamProfile, bestRuns:bestRuns };
+    recordsBook:recordsBook, venueTable:venueTable, teamProfile:teamProfile, bestRuns:bestRuns,
+    turnarounds:turnarounds, pctBelow:pctBelow };
 }
 
 /* ================= UI layer (browser only) ================= */
@@ -865,6 +923,7 @@ function readFilters(){
     team: el('fTeam').value || '', role: el('fRole').value, result: el('fResult').value,
     opp: el('fOpp').value || '', venue: el('fVenue').value || '',
     dow: +el('fDow').value, stage: el('fStage').value,
+    month: el('fMonth').value === '' ? null : +el('fMonth').value,
     rnd: el('fRnd').value === '' ? null : +el('fRnd').value,
     yFrom: +el('fYFrom').value || null, yTo: +el('fYTo').value || null,
     marMin: numOrNull('fMarMin'), marMax: numOrNull('fMarMax'),
@@ -930,8 +989,29 @@ function render(){
   else if (mode === 'scorigami') renderScorigami();
   else if (mode === 'streaks') renderStreaks();
   else if (mode === 'records') renderRecords();
+  else if (mode === 'turnarounds') renderTurnarounds();
   else if (mode === 'venues') renderVenues();
   else renderProfile();
+}
+
+function renderTurnarounds(){
+  var rows = turnarounds(state.games).slice(0, 25);
+  el('resultsTitle').textContent = 'Turnarounds \u2014 same-season rematch swings';
+  el('resultsCount').textContent = '';
+  var loadedFrom = state.games.length ? state.games[0].y : '';
+  el('resultsNote').textContent = 'Computed over ALL loaded seasons (' + loadedFrom + '\u2192), ignoring filters. Swing = change in margin between meetings of the same two teams in one season. \u21BA = result flipped. Top 25.';
+  var html = '<thead><tr><th>Swing</th><th>Season</th><th>First meeting</th><th>Rematch</th></tr></thead><tbody>';
+  if (!rows.length) html += '<tr><td colspan="4" class="empty">No same-season rematches in the loaded data.</td></tr>';
+  function leg(g){
+    var res = g.win === null ? 'draw' : esc(g.win) + ' by ' + g.mar;
+    return matchHTML(g) + '<br><span class="num">' + esc(rdLabel(g)) + ' \u00B7 ' + res + '</span>';
+  }
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    html += '<tr><td class="num"><b>' + r.swing + '</b>' + (r.flipped ? ' <span class="flip">\u21BA</span>' : '') +
+      '</td><td class="num">' + r.g1.y + '</td><td>' + leg(r.g1) + '</td><td>' + leg(r.g2) + '</td></tr>';
+  }
+  el('resultsTable').innerHTML = html + '</tbody>';
 }
 
 function renderH2H(f){
@@ -950,7 +1030,40 @@ function renderH2H(f){
     ' &middot; points ' + fmtInt(s.pf) + '\u2013' + fmtInt(s.pa) +
     (s.bigFor ? '<br>Biggest: ' + esc(f.team) + ' by ' + s.bigFor.mar + ' (' + s.bigFor.y + ')' : '') +
     (s.bigAgainst ? ' &middot; ' + esc(f.opp) + ' by ' + s.bigAgainst.mar + ' (' + s.bigAgainst.y + ')' : '');
+  if (meet.length >= 3) {
+    var cv = document.createElement('canvas');
+    box.appendChild(cv);
+    drawSpark(cv, meet, f.team);
+  }
   box.hidden = false;
+}
+
+function drawSpark(cv, meetings, team){
+  var w = cv.clientWidth || 320, h = 46, dpr = window.devicePixelRatio || 1;
+  cv.width = w * dpr; cv.height = h * dpr;
+  var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  var styles = getComputedStyle(document.documentElement);
+  var lamp = styles.getPropertyValue('--lamp').trim() || '#F0B34A';
+  var bad = styles.getPropertyValue('--bad').trim() || '#E07A5F';
+  var dim = styles.getPropertyValue('--dim').trim() || '#8FA098';
+  var line = styles.getPropertyValue('--line').trim() || '#25332C';
+  var maxM = 1;
+  meetings.forEach(function(g){ if (g.mar > maxM) maxM = g.mar; });
+  var mid = h / 2, slot = w / meetings.length;
+  var bw = Math.max(2, Math.min(10, slot - 2));
+  meetings.forEach(function(g, i){
+    var x = i * slot + (slot - bw) / 2;
+    var s = g.win === null ? 0 : (g.win === team ? g.mar : -g.mar);
+    if (s === 0) { ctx.fillStyle = dim; ctx.fillRect(x, mid - 1, bw, 2); }
+    else {
+      var bh = Math.abs(s) / maxM * (mid - 3);
+      ctx.fillStyle = s > 0 ? lamp : bad;
+      ctx.fillRect(x, s > 0 ? mid - bh : mid, bw, bh);
+    }
+  });
+  ctx.strokeStyle = line;
+  ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
 }
 
 function renderGames(){
@@ -987,11 +1100,58 @@ function renderGames(){
   if (!rows.length) html += '<tr><td colspan="6" class="empty">No games match. Loosen a filter or two.</td></tr>';
   for (var i = 0; i < rows.length; i++) {
     var g = rows[i];
-    html += '<tr><td class="num">' + g.dstr + '</td><td>' + matchHTML(g) + '</td><td class="num">' + g.mar +
+    html += '<tr data-i="' + i + '"><td class="num">' + g.dstr + '</td><td>' + matchHTML(g) + '</td><td class="num">' + g.mar +
       '</td><td class="num">' + g.tot + '</td><td>' + esc(rdLabel(g)) + '</td><td>' + esc(g.venue) + '</td></tr>';
   }
   el('resultsTable').innerHTML = html + '</tbody>';
   bindSortHeaders();
+  el('resultsTable').onclick = onRowTap;
+}
+
+/* ----- game detail drill-down ----- */
+function ensureDist(){
+  if (!state.sortedMars) {
+    state.sortedMars = state.games.map(function(g){ return g.mar; }).sort(function(a,b){ return a-b; });
+    state.sortedTots = state.games.map(function(g){ return g.tot; }).sort(function(a,b){ return a-b; });
+  }
+}
+function getSmAll(){
+  if (!state.smAll) state.smAll = scoreMap(state.games);
+  return state.smAll;
+}
+function fullScore(g){
+  var h = esc(g.ht) + ' ' + g.hg + '.' + g.hb + ' (' + g.hs + ')';
+  var a = esc(g.at) + ' ' + g.ag + '.' + g.ab + ' (' + g.as + ')';
+  if (g.win === g.ht) h = '<span class="w">' + h + '</span>';
+  if (g.win === g.at) a = '<span class="w">' + a + '</span>';
+  return h + ' \u2014 ' + a;
+}
+function detailHTML(g){
+  ensureDist();
+  var rec = getSmAll().map[scoreKey(g)];
+  var rar = (rec && rec.count === 1)
+    ? '\u273A the only time this scoreline has ever happened (in loaded seasons)'
+    : 'scoreline ' + scoreKey(g) + ' seen ' + rec.count + '\u00D7 in loaded seasons (first ' + rec.first.y + ', last ' + rec.last.y + ')';
+  var mp = fmt1(pctBelow(state.sortedMars, g.mar));
+  var tp = fmt1(pctBelow(state.sortedTots, g.tot));
+  var res = g.win === null ? 'Draw' : esc(g.win) + ' by ' + g.mar;
+  return '<span class="big">' + fullScore(g) + '</span><br>' +
+    '<b>' + res + '</b> &middot; ' + esc(g.rname) + ' &middot; ' + DOW_NAME[g.dow] + ' ' + g.dstr + ' &middot; ' + esc(g.venue) + '<br>' +
+    rar + '<br>' +
+    'margin bigger than <b>' + mp + '%</b> of loaded games &middot; total higher than <b>' + tp + '%</b>';
+}
+function onRowTap(ev){
+  if (state.mode !== 'games') return;
+  var tr = ev.target && ev.target.closest ? ev.target.closest('tr') : null;
+  if (!tr || !tr.hasAttribute('data-i')) return;
+  var nx = tr.nextElementSibling;
+  if (nx && nx.className === 'detail') { nx.remove(); return; }
+  var g = state.filtered[+tr.getAttribute('data-i')];
+  if (!g) return;
+  var d = document.createElement('tr');
+  d.className = 'detail';
+  d.innerHTML = '<td colspan="6">' + detailHTML(g) + '</td>';
+  tr.after(d);
 }
 
 function renderScorigami(){
@@ -1268,7 +1428,7 @@ var PRESETS = {
   gf:          { stage:'gf' }
 };
 function resetForm(){
-  ['fTeam','fOpp','fVenue','fRnd'].forEach(function(id){ el(id).value=''; });
+  ['fTeam','fOpp','fVenue','fRnd','fMonth'].forEach(function(id){ el(id).value=''; });
   el('fRole').value='any'; el('fResult').value='any'; el('fDow').value='-1'; el('fStage').value='all';
   ['fMarMin','fMarMax','fTotMin','fTotMax','fTsMin','fTsMax'].forEach(function(id){ el(id).value=''; });
   state.extra = { special: null, mday: null, exactKey: null };
@@ -1284,6 +1444,7 @@ function setFormFromFilters(f){
   el('fResult').value = f.result || 'any';
   el('fDow').value = String(f.dow != null ? f.dow : -1);
   el('fStage').value = f.stage || 'all';
+  if (f.month != null) el('fMonth').value = String(f.month);
   if (f.rnd != null) el('fRnd').value = String(f.rnd);
   if (f.yFrom != null) el('fYFrom').value = String(f.yFrom);
   if (f.yTo != null) el('fYTo').value = String(f.yTo);
